@@ -1,0 +1,457 @@
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: github-runners
+  labels:
+    name: github-runners
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: github-runner-config
+  namespace: github-runners
+data:
+  # ============================================================================
+  # OWNER CONFIGURATION
+  # ============================================================================
+  # Comma-separated list of owner names (organizations or users)
+  # Single owner: OWNERS: "mycompany"
+  # Multiple owners: OWNERS: "mycompany,personal,client-org"
+  # Note: Hyphens in owner names become underscores in env var names
+  # Example: "my-org" becomes "OWNER_MY_ORG_*" in configuration below
+  OWNERS: "mycompany"
+  # OWNERS: "mycompany,personal,client-org"  # Uncomment for multiple owners
+
+  # ============================================================================
+  # PER-OWNER CONFIGURATION
+  # ============================================================================
+  # Each owner requires: OWNER_{NAME}_GITHUB_TOKEN (configured in Secret)
+  # Optional per-owner settings:
+  # - OWNER_{NAME}_ALL_REPOS: "true"  # Manage all repos under this owner
+  # - OWNER_{NAME}_REPO_NAME: "repo"  # Or specify single repo name
+  # - OWNER_{NAME}_MAX_RUNNERS: "10"  # Per-owner runner limit
+  # - OWNER_{NAME}_LABELS: "prod,team" # Additional runner labels
+  # - OWNER_{NAME}_WEBHOOK_SECRET: set in Secret (optional)
+
+  # Primary owner configuration
+  OWNER_MYCOMPANY_ALL_REPOS: "true"
+  OWNER_MYCOMPANY_MAX_RUNNERS: "15"
+  OWNER_MYCOMPANY_LABELS: "company,production"
+
+  # Secondary owner configuration (commented out - uncomment to enable)
+  # OWNER_PERSONAL_REPO_NAME: "my-project"
+  # OWNER_PERSONAL_MAX_RUNNERS: "5"
+  # OWNER_PERSONAL_LABELS: "personal,dev"
+
+  # Third owner configuration (commented out - uncomment to enable)
+  # OWNER_CLIENT_ORG_ALL_REPOS: "true"
+  # OWNER_CLIENT_ORG_MAX_RUNNERS: "10"
+  # OWNER_CLIENT_ORG_LABELS: "client,staging"
+
+  # ============================================================================
+  # GLOBAL RUNNER CONFIGURATION (applies to all owners)
+  # ============================================================================
+  MAX_RUNNERS: "5"  # Global default, can be overridden per-owner
+  RUNNER_TIMEOUT: "3600"
+  RUNNER_IMAGE: "myoung34/github-runner:ubuntu-noble"
+  CACHE_VOLUMES: "true"
+  LABELS: "self-hosted,linux,arm64"  # Base labels for all runners
+
+  # Server configuration
+  PORT: "8080"
+  DEBUG: "false"
+
+  # Runtime configuration
+  RUNTIME: "kubernetes"
+
+  # Webhook configuration
+  WEBHOOK_URL: "https://your-webhook-domain.com/webhook"  # Set your external webhook URL
+  # WEBHOOK_SECRET is configured via Secret below (global fallback)
+
+  # Job scanning configuration (300 seconds = 5 minutes)
+  JOB_SCAN_INTERVAL_SECONDS: "300"
+
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: github-runner-secrets
+  namespace: github-runners
+type: Opaque
+data:
+  # Base64 encoded values - replace with your actual encoded secrets
+  # To encode: echo -n "your-token" | base64
+
+  # ============================================================================
+  # MULTI-OWNER MODE SECRETS
+  # ============================================================================
+  # Each owner requires their own GitHub token
+  OWNER_MYCOMPANY_GITHUB_TOKEN: "your-base64-encoded-company-token"
+  OWNER_MYCOMPANY_WEBHOOK_SECRET: "your-base64-encoded-company-webhook-secret"
+
+  # Secondary owner secrets (commented out - uncomment to enable)
+  # OWNER_PERSONAL_GITHUB_TOKEN: "your-base64-encoded-personal-token"
+  # OWNER_PERSONAL_WEBHOOK_SECRET: "your-base64-encoded-personal-webhook-secret"
+
+  # Third owner secrets (commented out - uncomment to enable)
+  # OWNER_CLIENT_ORG_GITHUB_TOKEN: "your-base64-encoded-client-token"
+  # OWNER_CLIENT_ORG_WEBHOOK_SECRET: "your-base64-encoded-client-webhook-secret"
+
+  # ============================================================================
+  # GLOBAL WEBHOOK SECRET (optional fallback for all owners)
+  # ============================================================================
+  WEBHOOK_SECRET: "your-base64-encoded-global-webhook-secret"
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: github-runner-autoscaler
+  namespace: github-runners
+  labels:
+    app: github-runner-autoscaler
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: github-runner-autoscaler
+  template:
+    metadata:
+      labels:
+        app: github-runner-autoscaler
+    spec:
+      serviceAccountName: github-runner-sa
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1001
+        runAsGroup: 1001
+        fsGroup: 1001
+      containers:
+      - name: autoscaler
+        image: ghcr.io/cecil-the-coder/gha-webhook-scaler:latest  # Replace with your actual image
+        imagePullPolicy: Always
+        ports:
+        - containerPort: 8080
+          name: http
+          protocol: TCP
+        env:
+        # ========================================================================
+        # OWNER CONFIGURATION
+        # ========================================================================
+        - name: OWNERS
+          valueFrom:
+            configMapKeyRef:
+              name: github-runner-config
+              key: OWNERS
+
+        # Primary owner configuration
+        - name: OWNER_MYCOMPANY_ALL_REPOS
+          valueFrom:
+            configMapKeyRef:
+              name: github-runner-config
+              key: OWNER_MYCOMPANY_ALL_REPOS
+        - name: OWNER_MYCOMPANY_MAX_RUNNERS
+          valueFrom:
+            configMapKeyRef:
+              name: github-runner-config
+              key: OWNER_MYCOMPANY_MAX_RUNNERS
+        - name: OWNER_MYCOMPANY_LABELS
+          valueFrom:
+            configMapKeyRef:
+              name: github-runner-config
+              key: OWNER_MYCOMPANY_LABELS
+        - name: OWNER_MYCOMPANY_GITHUB_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: github-runner-secrets
+              key: OWNER_MYCOMPANY_GITHUB_TOKEN
+        - name: OWNER_MYCOMPANY_WEBHOOK_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: github-runner-secrets
+              key: OWNER_MYCOMPANY_WEBHOOK_SECRET
+              optional: true
+
+        # Secondary owner configuration (commented out in ConfigMap/Secret)
+        # Uncomment these when you enable the second owner
+        # - name: OWNER_PERSONAL_REPO_NAME
+        #   valueFrom:
+        #     configMapKeyRef:
+        #       name: github-runner-config
+        #       key: OWNER_PERSONAL_REPO_NAME
+        # - name: OWNER_PERSONAL_MAX_RUNNERS
+        #   valueFrom:
+        #     configMapKeyRef:
+        #       name: github-runner-config
+        #       key: OWNER_PERSONAL_MAX_RUNNERS
+        # - name: OWNER_PERSONAL_LABELS
+        #   valueFrom:
+        #     configMapKeyRef:
+        #       name: github-runner-config
+        #       key: OWNER_PERSONAL_LABELS
+        # - name: OWNER_PERSONAL_GITHUB_TOKEN
+        #   valueFrom:
+        #     secretKeyRef:
+        #       name: github-runner-secrets
+        #       key: OWNER_PERSONAL_GITHUB_TOKEN
+        # - name: OWNER_PERSONAL_WEBHOOK_SECRET
+        #   valueFrom:
+        #     secretKeyRef:
+        #       name: github-runner-secrets
+        #       key: OWNER_PERSONAL_WEBHOOK_SECRET
+        #       optional: true
+
+        # Third owner configuration (commented out in ConfigMap/Secret)
+        # - name: OWNER_CLIENT_ORG_ALL_REPOS
+        #   valueFrom:
+        #     configMapKeyRef:
+        #       name: github-runner-config
+        #       key: OWNER_CLIENT_ORG_ALL_REPOS
+        # - name: OWNER_CLIENT_ORG_MAX_RUNNERS
+        #   valueFrom:
+        #     configMapKeyRef:
+        #       name: github-runner-config
+        #       key: OWNER_CLIENT_ORG_MAX_RUNNERS
+        # - name: OWNER_CLIENT_ORG_LABELS
+        #   valueFrom:
+        #     configMapKeyRef:
+        #       name: github-runner-config
+        #       key: OWNER_CLIENT_ORG_LABELS
+        # - name: OWNER_CLIENT_ORG_GITHUB_TOKEN
+        #   valueFrom:
+        #     secretKeyRef:
+        #       name: github-runner-secrets
+        #       key: OWNER_CLIENT_ORG_GITHUB_TOKEN
+        # - name: OWNER_CLIENT_ORG_WEBHOOK_SECRET
+        #   valueFrom:
+        #     secretKeyRef:
+        #       name: github-runner-secrets
+        #       key: OWNER_CLIENT_ORG_WEBHOOK_SECRET
+        #       optional: true
+
+        # ========================================================================
+        # GLOBAL CONFIGURATION (applies to all owners)
+        # ========================================================================
+        - name: MAX_RUNNERS
+          valueFrom:
+            configMapKeyRef:
+              name: github-runner-config
+              key: MAX_RUNNERS
+        - name: RUNNER_TIMEOUT
+          valueFrom:
+            configMapKeyRef:
+              name: github-runner-config
+              key: RUNNER_TIMEOUT
+        - name: RUNNER_IMAGE
+          valueFrom:
+            configMapKeyRef:
+              name: github-runner-config
+              key: RUNNER_IMAGE
+        - name: CACHE_VOLUMES
+          valueFrom:
+            configMapKeyRef:
+              name: github-runner-config
+              key: CACHE_VOLUMES
+        - name: LABELS
+          valueFrom:
+            configMapKeyRef:
+              name: github-runner-config
+              key: LABELS
+        - name: PORT
+          valueFrom:
+            configMapKeyRef:
+              name: github-runner-config
+              key: PORT
+        - name: DEBUG
+          valueFrom:
+            configMapKeyRef:
+              name: github-runner-config
+              key: DEBUG
+        - name: RUNTIME
+          valueFrom:
+            configMapKeyRef:
+              name: github-runner-config
+              key: RUNTIME
+        - name: WEBHOOK_URL
+          valueFrom:
+            configMapKeyRef:
+              name: github-runner-config
+              key: WEBHOOK_URL
+        - name: JOB_SCAN_INTERVAL_SECONDS
+          valueFrom:
+            configMapKeyRef:
+              name: github-runner-config
+              key: JOB_SCAN_INTERVAL_SECONDS
+
+        # Global webhook secret (fallback for all owners)
+        - name: WEBHOOK_SECRET
+          valueFrom:
+            secretKeyRef:
+              name: github-runner-secrets
+              key: WEBHOOK_SECRET
+              optional: true
+        resources:
+          requests:
+            memory: "128Mi"
+            cpu: "100m"
+          limits:
+            memory: "512Mi"
+            cpu: "500m"
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 30
+          periodSeconds: 30
+          timeoutSeconds: 10
+          failureThreshold: 3
+        readinessProbe:
+          httpGet:
+            path: /health
+            port: 8080
+          initialDelaySeconds: 5
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+        volumeMounts:
+        - name: docker-sock
+          mountPath: /var/run/docker.sock
+        - name: logs
+          mountPath: /app/logs
+      volumes:
+      - name: docker-sock
+        hostPath:
+          path: /var/run/docker.sock
+          type: Socket
+      - name: logs
+        emptyDir: {}
+      restartPolicy: Always
+
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: github-runner-sa
+  namespace: github-runners
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: github-runner-role
+rules:
+- apiGroups: [""]
+  resources: ["pods", "services", "endpoints"]
+  verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+- apiGroups: ["apps"]
+  resources: ["deployments", "replicasets"]
+  verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: github-runner-binding
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: github-runner-role
+subjects:
+- kind: ServiceAccount
+  name: github-runner-sa
+  namespace: github-runners
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: github-runner-service
+  namespace: github-runners
+  labels:
+    app: github-runner-autoscaler
+spec:
+  type: ClusterIP
+  ports:
+  - port: 8080
+    targetPort: 8080
+    protocol: TCP
+    name: http
+  selector:
+    app: github-runner-autoscaler
+
+---
+# Optional: ServiceMonitor for Prometheus monitoring
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: github-runner-monitor
+  namespace: github-runners
+  labels:
+    app: github-runner-autoscaler
+spec:
+  selector:
+    matchLabels:
+      app: github-runner-autoscaler
+  endpoints:
+  - port: http
+    path: /metrics
+    interval: 30s
+
+---
+# Optional: Ingress for external access
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: github-runner-ingress
+  namespace: github-runners
+  annotations:
+    nginx.ingress.kubernetes.io/rewrite-target: /
+    # Add TLS and other annotations as needed
+spec:
+  ingressClassName: nginx
+  rules:
+  - host: your-domain.com  # Replace with your domain
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: github-runner-service
+            port:
+              number: 8080
+  Uncomment and configure TLS if needed
+  tls:
+  - hosts:
+    - your-domain.com
+    secretName: github-runner-tls
+
+---
+# Optional: HorizontalPodAutoscaler
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: github-runner-hpa
+  namespace: github-runners
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: github-runner-autoscaler
+  minReplicas: 1
+  maxReplicas: 3
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 70
+  - type: Resource
+    resource:
+      name: memory
+      target:
+        type: Utilization
+        averageUtilization: 80 
