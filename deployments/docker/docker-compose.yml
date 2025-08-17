@@ -1,0 +1,86 @@
+services:
+  github-runner-autoscaler-go:
+    build:
+      context: ../../
+      dockerfile: Dockerfile
+    container_name: github-runner-autoscaler-go
+    restart: unless-stopped
+    user: "1001:1001"
+    group_add:
+      - "997"
+    environment:
+      # Legacy single-owner support (backwards compatibility)
+      - GITHUB_TOKEN=${GITHUB_TOKEN:-}
+      - REPO_OWNER=${REPO_OWNER:-}
+      - REPO_NAME=${REPO_NAME:-}
+      - ALL_REPOS=${ALL_REPOS:-false}
+      - WEBHOOK_SECRET=${WEBHOOK_SECRET:-}
+      
+      # Multi-owner support
+      - MULTI_OWNER_MODE=${MULTI_OWNER_MODE:-false}
+      - OWNERS=${OWNERS:-}
+      
+      # Owner-specific configurations (example)
+      - OWNER_EXAMPLE_GITHUB_TOKEN=${OWNER_EXAMPLE_GITHUB_TOKEN:-}
+      - OWNER_EXAMPLE_ALL_REPOS=${OWNER_EXAMPLE_ALL_REPOS:-false}
+      - OWNER_EXAMPLE_REPO_NAME=${OWNER_EXAMPLE_REPO_NAME:-}
+      - OWNER_EXAMPLE_WEBHOOK_SECRET=${OWNER_EXAMPLE_WEBHOOK_SECRET:-}
+      - OWNER_EXAMPLE_MAX_RUNNERS=${OWNER_EXAMPLE_MAX_RUNNERS:-}
+      - OWNER_EXAMPLE_LABELS=${OWNER_EXAMPLE_LABELS:-}
+      
+      # Global configuration
+      - MAX_RUNNERS=${MAX_RUNNERS:-5}
+      - RUNNER_TIMEOUT=${RUNNER_TIMEOUT:-3600}
+      - PORT=${PORT:-8080}
+      - DEBUG=${DEBUG:-false}
+      - RUNNER_IMAGE=${RUNNER_IMAGE:-myoung34/github-runner:ubuntu-noble}
+      - CACHE_VOLUMES=${CACHE_VOLUMES:-true}
+      - LABELS=${LABELS:-}
+      
+      # Runtime configuration
+      - RUNTIME=${RUNTIME:-docker}
+      
+      # Webhook configuration  
+      - WEBHOOK_URL=${WEBHOOK_URL:-}  # Set your external webhook URL
+      - WEBHOOK_SECRET=${WEBHOOK_SECRET:-generate}  # Generate random secrets, or set to specific value
+      
+      # Job scanning configuration (0 to disable, value in seconds)
+      - JOB_SCAN_INTERVAL_SECONDS=${JOB_SCAN_INTERVAL_SECONDS:-300}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./logs:/app/logs
+    networks:
+      - github-runners
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+  gharunner_cloudflared:
+    container_name: gharunner_cloudflared
+    image: cloudflare/cloudflared:latest
+    restart: always
+    command: tunnel run
+    environment:
+      - TUNNEL_TOKEN=${CLOUDFLARED_TUNNEL_TOKEN}
+    networks:
+      - github-runners
+    depends_on:
+      - github-runner-autoscaler-go
+
+networks:
+  github-runners:
+    driver: bridge
+
+volumes:
+  docker-cache-amd64:
+    driver: local
+  docker-cache-arm64:
+    driver: local
+  buildkit-cache-amd64:
+    driver: local
+  buildkit-cache-arm64:
+    driver: local
+  registry-cache:
+    driver: local 
