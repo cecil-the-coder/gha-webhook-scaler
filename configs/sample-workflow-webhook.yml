@@ -1,0 +1,201 @@
+name: Multi-Architecture Build with Webhook Auto-Scaler
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+    inputs:
+      architecture:
+        description: 'Target architecture'
+        required: false
+        default: 'both'
+        type: choice
+        options:
+        - both
+        - amd64
+        - arm64
+
+jobs:
+  # AMD64 Build Job
+  build-amd64:
+    if: ${{ github.event.inputs.architecture == 'both' || github.event.inputs.architecture == 'amd64' || github.event.inputs.architecture == '' }}
+    runs-on: [self-hosted, linux, x64, docker]
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+
+    - name: Build and test (AMD64)
+      run: |
+        echo "🏗️ Building on AMD64 architecture"
+        echo "Runner: $(uname -m)"
+        echo "Docker version: $(docker --version)"
+        
+        # Example build commands
+        docker build --platform linux/amd64 -t myapp:amd64 .
+        
+        # Run tests
+        echo "✅ AMD64 build completed successfully"
+
+    - name: Upload AMD64 artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: build-amd64
+        path: |
+          dist/
+          *.log
+
+  # ARM64 Build Job
+  build-arm64:
+    if: ${{ github.event.inputs.architecture == 'both' || github.event.inputs.architecture == 'arm64' || github.event.inputs.architecture == '' }}
+    runs-on: [self-hosted, linux, arm64, docker]
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+
+    - name: Build and test (ARM64)
+      run: |
+        echo "🏗️ Building on ARM64 architecture"
+        echo "Runner: $(uname -m)"
+        echo "Docker version: $(docker --version)"
+        
+        # Example build commands
+        docker build --platform linux/arm64 -t myapp:arm64 .
+        
+        # Run tests
+        echo "✅ ARM64 build completed successfully"
+
+    - name: Upload ARM64 artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: build-arm64
+        path: |
+          dist/
+          *.log
+
+  # Multi-arch build job (runs on any available runner)
+  build-multi-arch:
+    runs-on: [self-hosted, linux, docker]
+    needs: [build-amd64, build-arm64]
+    if: always() && (needs.build-amd64.result == 'success' || needs.build-arm64.result == 'success')
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Download AMD64 artifacts
+      if: needs.build-amd64.result == 'success'
+      uses: actions/download-artifact@v4
+      with:
+        name: build-amd64
+        path: ./amd64/
+
+    - name: Download ARM64 artifacts
+      if: needs.build-arm64.result == 'success'
+      uses: actions/download-artifact@v4
+      with:
+        name: build-arm64
+        path: ./arm64/
+
+    - name: Create multi-arch manifest
+      run: |
+        echo "🔗 Creating multi-architecture manifest"
+        echo "Available architectures:"
+        ls -la ./*/
+        
+        # Example: Create multi-arch Docker manifest
+        # docker manifest create myapp:latest myapp:amd64 myapp:arm64
+        # docker manifest push myapp:latest
+        
+        echo "✅ Multi-arch build completed"
+
+  # Test job that can run on any architecture
+  test:
+    runs-on: [self-hosted, linux, docker]
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Run tests
+      run: |
+        echo "🧪 Running tests on $(uname -m)"
+        
+        # Example test commands
+        echo "Running unit tests..."
+        # npm test || go test ./... || python -m pytest
+        
+        echo "Running integration tests..."
+        # docker-compose -f docker-compose.test.yml up --abort-on-container-exit
+        
+        echo "✅ All tests passed"
+
+  # Deployment job (only on main branch)
+  deploy:
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    runs-on: [self-hosted, linux, docker]
+    needs: [build-multi-arch, test]
+    environment: production
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    - name: Deploy application
+      run: |
+        echo "🚀 Deploying application"
+        echo "Target environment: production"
+        echo "Architecture: $(uname -m)"
+        
+        # Example deployment commands
+        # kubectl apply -f k8s/
+        # docker-compose -f docker-compose.prod.yml up -d
+        
+        echo "✅ Deployment completed successfully"
+
+  # Cleanup job (always runs)
+  cleanup:
+    if: always()
+    runs-on: [self-hosted, linux, docker]
+    needs: [build-amd64, build-arm64, build-multi-arch, test, deploy]
+    
+    steps:
+    - name: Cleanup workspace
+      run: |
+        echo "🧹 Cleaning up workspace"
+        
+        # Clean up Docker images and containers
+        docker system prune -f
+        
+        # Clean up build artifacts
+        rm -rf dist/ *.log
+        
+        echo "✅ Cleanup completed"
+
+  # Webhook test job (for testing auto-scaler)
+  webhook-test:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: [self-hosted, linux, docker]
+    
+    steps:
+    - name: Test webhook auto-scaler
+      run: |
+        echo "🔗 Testing webhook-based auto-scaler"
+        echo "This job should trigger the auto-scaler via webhook"
+        echo "Runner: $(hostname)"
+        echo "Architecture: $(uname -m)"
+        echo "Timestamp: $(date)"
+        
+        # Simulate some work
+        sleep 30
+        
+        echo "✅ Webhook test completed" 
