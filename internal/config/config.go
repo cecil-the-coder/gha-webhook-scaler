@@ -55,6 +55,9 @@ type Config struct {
 	// Webhook management configuration
 	CleanupOldWebhooks bool // Remove webhooks pointing to different URLs
 
+	// Burst runners on cloud VMs (internal/burst); off unless BURST_PROVIDER is set
+	Burst BurstConfig
+
 }
 
 func NewConfig() *Config {
@@ -86,6 +89,8 @@ func NewConfig() *Config {
 		JobScanInterval: time.Duration(getEnvInt("JOB_SCAN_INTERVAL_SECONDS", 0)) * time.Second,
 
 		CleanupOldWebhooks: getEnvBool("CLEANUP_OLD_WEBHOOKS", false),
+
+		Burst: loadBurstConfig(),
 	}
 
 	// Set runner labels based on architecture
@@ -121,6 +126,8 @@ func (c *Config) loadOwnerConfig() {
 				WebhookSecret: getEnv(prefix+"WEBHOOK_SECRET", globalWebhookSecret), // Fall back to global
 				AllRepos:      getEnvBool(prefix+"ALL_REPOS", false),
 				RepoName:      getEnv(prefix+"REPO_NAME", ""),
+				Burst:         getEnvBool(prefix+"BURST", true),
+				RunnerGroupID: int64(getEnvInt(prefix+"RUNNER_GROUP_ID", 1)),
 			}
 
 			// Optional per-owner runner limits
@@ -152,6 +159,8 @@ func (c *Config) loadOwnerConfig() {
 				WebhookSecret: globalWebhookSecret,
 				AllRepos:      getEnvBool("ALL_REPOS", false),
 				RepoName:      getEnv("REPO_NAME", ""),
+				Burst:         true,
+				RunnerGroupID: int64(getEnvInt("RUNNER_GROUP_ID", 1)),
 			}
 			c.Owners[repoOwner] = ownerConfig
 		}
@@ -177,6 +186,10 @@ func (c *Config) Validate() error {
 	}
 	if c.Port <= 0 || c.Port > 65535 {
 		return fmt.Errorf("PORT must be between 1 and 65535")
+	}
+
+	if err := c.Burst.Validate(); err != nil {
+		return err
 	}
 
 	// Validate job scan interval (warn if too frequent)
