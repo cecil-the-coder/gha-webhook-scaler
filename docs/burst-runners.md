@@ -443,3 +443,20 @@ before it naming the failed check (for example `caller role` when
   and `BURST_BOOT_TIMEOUT`.
 - **Shutdown** stops the loop but leaves burst VMs running their jobs. The next start
   reaps them by the usual rules.
+
+## Workflow tips for fresh runners
+
+Burst runners start from a clean image every time. Long-lived runners can hide
+problems that only show up on a fresh runner:
+
+- **`git fetch` inside a job container is unauthenticated.** `actions/checkout` v6 and
+  later no longer writes the job token into `.git/config`. It links a credentials file
+  through `includeIf.gitdir` for the workspace's **host path** only. When a step
+  bind-mounts the repo into a container at another path (`-v $GITHUB_WORKSPACE:/app`)
+  and runs `git fetch` there, no token applies, and a private repo answers
+  "repository not found". On a long-lived runner the workspace often already holds
+  the objects from earlier jobs, so it never needs to fetch. Fetch what the job needs
+  in a host-side step after checkout, before the container starts.
+- **No warm caches.** Dependency, build and image caches start empty. Expect longer
+  jobs unless the image bakes them in or the workflow restores them with a cache
+  action.
