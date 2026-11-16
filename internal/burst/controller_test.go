@@ -383,3 +383,32 @@ func TestTick_BurstReposAlwaysPolled(t *testing.T) {
 		t.Fatalf("BURST_REPOS repo must be polled without activity, got %d VMs", h.vmsInPool("x64"))
 	}
 }
+
+func TestTick_DeletedVMStillListedIsNotDeletedTwice(t *testing.T) {
+	h := newHarness(t, testConfig(t))
+	h.prov.lingerOnDelete = true
+	h.c.NoteJob("acme/app")
+	h.job("acme/app", time.Hour, "self-hosted", "x64")
+	h.tick(t)
+	name := h.only()
+	scope := github.RunnerScope{Owner: "acme"}
+	h.forge.runners[scope] = []github.Runner{{Name: name, Busy: true}}
+	h.forge.jobs["acme/app"] = nil
+	h.tick(t)
+	h.forge.runners[scope] = nil
+	h.tick(t) // job_done -> delete; the VM stays listed, not running
+	h.tick(t)
+	h.tick(t)
+	if len(h.prov.deleted) != 1 {
+		t.Fatalf("deleted %v, want exactly one delete", h.prov.deleted)
+	}
+	if got := h.c.Status().VMsByPool["x64"]; got != 0 {
+		t.Errorf("a VM being deleted must not count as active, got %d", got)
+	}
+	// Still listed after the grace period: treated as a VM again and retried.
+	h.clk.advance(deleteGrace + time.Minute)
+	h.tick(t)
+	if len(h.prov.deleted) != 2 {
+		t.Errorf("after grace the delete must be retried, deleted=%v", h.prov.deleted)
+	}
+}

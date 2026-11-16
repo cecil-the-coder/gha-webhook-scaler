@@ -26,6 +26,9 @@ const (
 	// minSaturation is the least time an owner stays "saturated" after the
 	// primary runtime reports it at capacity.
 	minSaturation = 2 * time.Minute
+	// deleteGrace is how long a deleted VM may still be listed before it
+	// counts again (a delete that silently failed is then retried).
+	deleteGrace = 10 * time.Minute
 )
 
 // Controller reconciles burst VMs against the GitHub queue, one tick at a time.
@@ -53,6 +56,7 @@ type Controller struct {
 	lastOutcome  map[string]string
 	unconfirmed  map[string]unconfirmedVM
 	backoffUntil time.Time
+	deleting     map[string]time.Time // VMs we asked to delete; the provider lists them a while longer
 
 	wake    chan struct{}
 	wakeGap time.Duration
@@ -103,7 +107,7 @@ func New(cfg *config.Config, forge Forge, prov Provider, verify IdentityVerifier
 		cfg: bc, owners: cfg.Owners, forge: forge, prov: prov, verify: verify, reg: reg, budget: bud,
 		log: log.With("component", "burst"), now: time.Now,
 		active: map[string]time.Time{}, saturated: map[string]time.Time{}, ownerTypes: map[string]github.OwnerType{},
-		seenBusy: map[string]bool{}, lastOutcome: map[string]string{}, unconfirmed: map[string]unconfirmedVM{},
+		seenBusy: map[string]bool{}, lastOutcome: map[string]string{}, unconfirmed: map[string]unconfirmedVM{}, deleting: map[string]time.Time{},
 		wake: make(chan struct{}, 1), wakeGap: defaultWakeGap,
 		status: Status{Provider: bc.Provider, DryRun: bc.DryRun, BudgetCapH: bc.MaxVMHoursPerDay},
 	}, nil
@@ -334,10 +338,22 @@ func (c *Controller) Tick(ctx context.Context) error {
 	byPool := map[string][]vm{}
 	total := 0
 	scopes := map[Target]bool{}
+	listed := make(map[string]bool, len(all))
+	for _, in := range all {
+		listed[in.Name] = true
+	}
+	for name, at := range c.deleting {
+		if !listed[name] || now.Sub(at) > deleteGrace {
+			delete(c.deleting, name)
+		}
+	}
 	for _, in := range all {
 		p, ok := c.cfg.PoolFor(in.Name)
 		if !ok {
 			continue
+		}
+		if _, gone := c.deleting[in.Name]; gone {
+			continue // already being deleted: neither active nor deleted again
 		}
 		t, known := c.reg.TargetOf(p.Name, in.Name)
 		byPool[p.Name] = append(byPool[p.Name], vm{Instance: in, target: t, known: known})
@@ -514,6 +530,7 @@ func (c *Controller) deleteVM(ctx context.Context, pool, name, reason string) bo
 	if err := c.reg.Forget(pool, name); err != nil {
 		c.log.Error("registry_failed", "pool", pool, "vm", name, "err", err)
 	}
+	c.deleting[name] = c.now()
 	c.bump(func(s *Status) { s.VMsDeleted++ })
 	c.log.Info("delete", "pool", pool, "vm", name, "reason", reason)
 	return true

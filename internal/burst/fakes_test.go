@@ -63,12 +63,13 @@ func (f *fakeForge) MintJIT(_ context.Context, s github.RunnerScope, name string
 }
 
 type fakeProvider struct {
-	vms       map[string]Instance
-	pools     map[string]string // vm -> pool
-	createErr error
-	created   []string
-	deleted   []string
-	now       func() time.Time
+	vms            map[string]Instance
+	pools          map[string]string // vm -> pool
+	createErr      error
+	lingerOnDelete bool
+	created        []string
+	deleted        []string
+	now            func() time.Time
 }
 
 func newFakeProvider(now func() time.Time) *fakeProvider {
@@ -88,7 +89,13 @@ func (p *fakeProvider) Create(_ context.Context, pool config.BurstPool, name str
 }
 
 func (p *fakeProvider) Delete(_ context.Context, name string) error {
-	delete(p.vms, name)
+	if p.lingerOnDelete {
+		v := p.vms[name]
+		v.Running = false // GCE keeps listing it (STOPPING/TERMINATED) for a while
+		p.vms[name] = v
+	} else {
+		delete(p.vms, name)
+	}
 	p.deleted = append(p.deleted, name)
 	return nil
 }
