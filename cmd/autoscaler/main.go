@@ -13,6 +13,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/joho/godotenv"
 	
+	"github.com/cecil-the-coder/gha-webhook-scaler/internal/burst"
 	"github.com/cecil-the-coder/gha-webhook-scaler/internal/config"
 	"github.com/cecil-the-coder/gha-webhook-scaler/internal/github"
 	"github.com/cecil-the-coder/gha-webhook-scaler/internal/runtime"
@@ -38,7 +39,10 @@ type Application struct {
 	WebhookEndpoints *webhook.Endpoints
 	JobScanner       *scanner.JobScanner
 	WorkflowMonitor  *webhook.WorkflowMonitor
+	Burst            *burst.Controller // nil when burst runners are off
 	Server           *http.Server
+
+	stopBackground context.CancelFunc
 }
 
 // NewApplication creates a new application instance with all dependencies initialized
@@ -80,6 +84,16 @@ func NewApplication() (*Application, error) {
 	// Set the workflow monitor in the webhook handler after all dependencies are ready
 	webhookHandler.SetWorkflowMonitor(workflowMonitor)
 
+	// Burst runners on cloud VMs (off unless BURST_PROVIDER is set)
+	burstController, err := newBurstController(context.Background(), cfg, githubClients)
+	if err != nil {
+		return nil, fmt.Errorf("burst runners: %w", err)
+	}
+	if burstController != nil {
+		runnerManager.SetOverflow(burstController)
+		webhookHandler.SetBurst(burstController)
+	}
+
 	app := &Application{
 		Config:           cfg,
 		GitHubClients:    githubClients,
@@ -89,6 +103,7 @@ func NewApplication() (*Application, error) {
 		WebhookEndpoints: webhookEndpoints,
 		JobScanner:       jobScanner,
 		WorkflowMonitor:  workflowMonitor,
+		Burst:            burstController,
 	}
 
 	return app, nil
@@ -111,6 +126,12 @@ func (app *Application) SetupRouter() *gin.Engine {
 
 	// Metrics endpoint
 	router.GET("/metrics", app.metricsHandler)
+
+	// Burst VMs fetch their one runner config here (authenticated by the
+	// VM's cloud identity token, not by network location)
+	if app.Burst != nil {
+		router.POST(config.RunnerConfigPath, gin.WrapF(app.Burst.ServeRunnerConfig))
+	}
 
 	return router
 }
@@ -160,6 +181,10 @@ func (app *Application) metricsHandler(c *gin.Context) {
 		},
 	}
 	
+	if app.Burst != nil {
+		response["metrics"].(gin.H)["burst"] = app.Burst.Status()
+	}
+
 	c.JSON(http.StatusOK, response)
 }
 
@@ -180,6 +205,13 @@ func (app *Application) Start() error {
 
 	// Start aggressive workflow monitoring
 	go app.WorkflowMonitor.Start()
+
+	// Start the burst runner loop
+	bgCtx, cancel := context.WithCancel(context.Background())
+	app.stopBackground = cancel
+	if app.Burst != nil {
+		go app.Burst.Run(bgCtx)
+	}
 
 	// Log startup information
 	app.logStartupInfo()
@@ -280,6 +312,11 @@ func (app *Application) Shutdown(ctx context.Context) error {
 
 	// Stop workflow monitoring
 	app.WorkflowMonitor.Stop()
+
+	// Stop the burst loop. Burst VMs keep their jobs; the next start reaps them.
+	if app.stopBackground != nil {
+		app.stopBackground()
+	}
 
 	// Stop all runners
 	app.RunnerManager.StopAllRunners()
