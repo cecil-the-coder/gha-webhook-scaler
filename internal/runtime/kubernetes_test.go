@@ -12,7 +12,6 @@ import (
 	policyv1beta1 "k8s.io/api/policy/v1beta1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/fields"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/watch"
 	corev1client "k8s.io/client-go/kubernetes/typed/core/v1"
@@ -879,6 +878,22 @@ func TestKubernetesRuntime_cleanupUnusedPVCs_PodListError(t *testing.T) {
 	mockPod.AssertExpectations(t)
 }
 
+// podNotFound returns a Kubernetes NotFound error for the given pod name, as the
+// API returns when StopRunner first looks a runner ID (a pod UID) up by name.
+func podNotFound(name string) error {
+	return errors.NewNotFound(corev1.Resource("pods"), name)
+}
+
+// runnerPod builds a minimal github-runner pod with the given name and UID.
+func runnerPod(name, uid string) corev1.Pod {
+	return corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: name,
+			UID:  types.UID(uid),
+		},
+	}
+}
+
 // TestKubernetesRuntime_StopRunner tests the StopRunner method
 func TestKubernetesRuntime_StopRunner(t *testing.T) {
 	mockPod := &MockPodInterface{}
@@ -890,18 +905,12 @@ func TestKubernetesRuntime_StopRunner(t *testing.T) {
 		namespace: "default",
 	}
 
-	// Mock the Pod List call to find the pod by UID
-	mockPod.On("List", mock.Anything, metav1.ListOptions{
-		FieldSelector: fields.OneTermEqualSelector("metadata.uid", "test-uid").String(),
-	}).Return(&corev1.PodList{
-		Items: []corev1.Pod{
-			{
-				ObjectMeta: metav1.ObjectMeta{
-					Name: "test-runner",
-					UID:  "test-uid",
-				},
-			},
-		},
+	// StopRunner first tries the ID as a pod name; a UID is not a pod name
+	mockPod.On("Get", mock.Anything, "test-uid", mock.Anything).Return(nil, podNotFound("test-uid"))
+
+	// It then lists runner pods and matches on UID
+	mockPod.On("List", mock.Anything, metav1.ListOptions{LabelSelector: "app=github-runner"}).Return(&corev1.PodList{
+		Items: []corev1.Pod{runnerPod("test-runner", "test-uid")},
 	}, nil)
 
 	// Mock the Pod Delete call
@@ -913,7 +922,30 @@ func TestKubernetesRuntime_StopRunner(t *testing.T) {
 	mockPod.AssertExpectations(t)
 }
 
-// TestKubernetesRuntime_StopRunner_NotFound tests the StopRunner method when pod is not found
+// TestKubernetesRuntime_StopRunner_ByName tests StopRunner when the ID is a pod name
+func TestKubernetesRuntime_StopRunner_ByName(t *testing.T) {
+	mockPod := &MockPodInterface{}
+	mockCoreV1 := &MockCoreV1Client{podInterface: mockPod}
+	mockClient := &MockKubernetesClient{coreV1Client: mockCoreV1}
+
+	kr := &KubernetesRuntime{
+		clientset: mockClient,
+		namespace: "default",
+	}
+
+	pod := runnerPod("test-runner", "test-uid")
+	mockPod.On("Get", mock.Anything, "test-runner", mock.Anything).Return(&pod, nil)
+	mockPod.On("Delete", mock.Anything, "test-runner", mock.Anything).Return(nil)
+
+	err := kr.StopRunner("test-runner")
+
+	assert.NoError(t, err)
+	mockPod.AssertExpectations(t)
+	mockPod.AssertNotCalled(t, "List", mock.Anything, mock.Anything)
+}
+
+// TestKubernetesRuntime_StopRunner_NotFound tests the StopRunner method when pod is not found.
+// A missing pod is treated as already deleted (cleanup race), so no error is returned.
 func TestKubernetesRuntime_StopRunner_NotFound(t *testing.T) {
 	mockPod := &MockPodInterface{}
 	mockCoreV1 := &MockCoreV1Client{podInterface: mockPod}
@@ -924,16 +956,16 @@ func TestKubernetesRuntime_StopRunner_NotFound(t *testing.T) {
 		namespace: "default",
 	}
 
+	mockPod.On("Get", mock.Anything, "nonexistent-uid", mock.Anything).Return(nil, podNotFound("nonexistent-uid"))
+
 	// Mock the Pod List call to return empty list (pod not found)
-	mockPod.On("List", mock.Anything, metav1.ListOptions{
-		FieldSelector: fields.OneTermEqualSelector("metadata.uid", "nonexistent-uid").String(),
-	}).Return(&corev1.PodList{Items: []corev1.Pod{}}, nil)
+	mockPod.On("List", mock.Anything, metav1.ListOptions{LabelSelector: "app=github-runner"}).Return(&corev1.PodList{Items: []corev1.Pod{}}, nil)
 
 	err := kr.StopRunner("nonexistent-uid")
 
-	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "pod with UID nonexistent-uid not found")
+	assert.NoError(t, err)
 	mockPod.AssertExpectations(t)
+	mockPod.AssertNotCalled(t, "Delete", mock.Anything, mock.Anything, mock.Anything)
 }
 
 // TestKubernetesRuntime_StopRunner_DeleteError tests the StopRunner method when delete fails
@@ -947,18 +979,11 @@ func TestKubernetesRuntime_StopRunner_DeleteError(t *testing.T) {
 		namespace: "default",
 	}
 
+	mockPod.On("Get", mock.Anything, "test-uid", mock.Anything).Return(nil, podNotFound("test-uid"))
+
 	// Mock the Pod List call to find the pod by UID
-	mockPod.On("List", mock.Anything, metav1.ListOptions{
-		FieldSelector: fields.OneTermEqualSelector("metadata.uid", "test-uid").String(),
-	}).Return(&corev1.PodList{
-		Items: []corev1.Pod{
-			{
-				ObjectMeta: metav1.ObjectMeta{
-					Name: "test-runner",
-					UID:  "test-uid",
-				},
-			},
-		},
+	mockPod.On("List", mock.Anything, metav1.ListOptions{LabelSelector: "app=github-runner"}).Return(&corev1.PodList{
+		Items: []corev1.Pod{runnerPod("test-runner", "test-uid")},
 	}, nil)
 
 	// Mock the Pod Delete call to return an error
@@ -982,50 +1007,22 @@ func TestKubernetesRuntime_StopAllRunners(t *testing.T) {
 		namespace: "default",
 	}
 
+	runner1 := runnerPod("runner-1", "uid-1")
+	runner1.Status.Phase = corev1.PodRunning
+	runner2 := runnerPod("runner-2", "uid-2")
+	runner2.Status.Phase = corev1.PodRunning
+
 	// Mock the Pod List call to return running pods
 	mockPod.On("List", mock.Anything, metav1.ListOptions{LabelSelector: "app=github-runner,architecture=amd64"}).Return(&corev1.PodList{
-		Items: []corev1.Pod{
-			{
-				ObjectMeta: metav1.ObjectMeta{
-					Name: "runner-1",
-					UID:  "uid-1",
-				},
-				Status: corev1.PodStatus{
-					Phase: corev1.PodRunning,
-				},
-			},
-			{
-				ObjectMeta: metav1.ObjectMeta{
-					Name: "runner-2",
-					UID:  "uid-2",
-				},
-				Status: corev1.PodStatus{
-					Phase: corev1.PodRunning,
-				},
-			},
-		},
+		Items: []corev1.Pod{runner1, runner2},
 	}, nil)
 
-	// Mock the Pod List calls that happen in StopRunner for each pod
-	mockPod.On("List", mock.Anything, metav1.ListOptions{FieldSelector: fields.OneTermEqualSelector("metadata.uid", "uid-1").String()}).Return(&corev1.PodList{
-		Items: []corev1.Pod{
-			{
-				ObjectMeta: metav1.ObjectMeta{
-					Name: "runner-1",
-					UID:  "uid-1",
-				},
-			},
-		},
-	}, nil)
-	mockPod.On("List", mock.Anything, metav1.ListOptions{FieldSelector: fields.OneTermEqualSelector("metadata.uid", "uid-2").String()}).Return(&corev1.PodList{
-		Items: []corev1.Pod{
-			{
-				ObjectMeta: metav1.ObjectMeta{
-					Name: "runner-2",
-					UID:  "uid-2",
-				},
-			},
-		},
+	// StopRunner is called with each pod UID: the by-name Get misses, then the
+	// pod is found by UID in the runner pod list
+	mockPod.On("Get", mock.Anything, "uid-1", mock.Anything).Return(nil, podNotFound("uid-1"))
+	mockPod.On("Get", mock.Anything, "uid-2", mock.Anything).Return(nil, podNotFound("uid-2"))
+	mockPod.On("List", mock.Anything, metav1.ListOptions{LabelSelector: "app=github-runner"}).Return(&corev1.PodList{
+		Items: []corev1.Pod{runner1, runner2},
 	}, nil)
 
 	// Mock the Pod Delete calls for each pod
@@ -1048,51 +1045,35 @@ func TestKubernetesRuntime_CleanupOldRunners(t *testing.T) {
 		namespace: "default",
 	}
 
+	oldRunner := runnerPod("old-runner", "old-uid")
+	oldRunner.Status.Phase = corev1.PodRunning
+	newRunner := runnerPod("new-runner", "new-uid")
+	newRunner.Status.Phase = corev1.PodRunning
+
 	// Mock the Pod List call to return a mix of old and new pods
 	// For this test, we want to have at least one pod that will be cleaned up
 	mockPod.On("List", mock.Anything, metav1.ListOptions{LabelSelector: "app=github-runner,architecture=amd64"}).Return(&corev1.PodList{
-		Items: []corev1.Pod{
-			{
-				ObjectMeta: metav1.ObjectMeta{
-					Name: "old-runner",
-					UID:  "old-uid",
-				},
-				Status: corev1.PodStatus{
-					Phase: corev1.PodRunning,
-				},
-			},
-			{
-				ObjectMeta: metav1.ObjectMeta{
-					Name: "new-runner",
-					UID:  "new-uid",
-				},
-				Status: corev1.PodStatus{
-					Phase: corev1.PodRunning,
-				},
-			},
-		},
+		Items: []corev1.Pod{oldRunner, newRunner},
 	}, nil)
 
-	// Mock the Pod List calls that happen in StopRunner for both pods
-	mockPod.On("List", mock.Anything, metav1.ListOptions{FieldSelector: fields.OneTermEqualSelector("metadata.uid", "old-uid").String()}).Return(&corev1.PodList{
-		Items: []corev1.Pod{
-			{
-				ObjectMeta: metav1.ObjectMeta{
-					Name: "old-runner",
-					UID:  "old-uid",
-				},
-			},
-		},
-	}, nil)
-	mockPod.On("List", mock.Anything, metav1.ListOptions{FieldSelector: fields.OneTermEqualSelector("metadata.uid", "new-uid").String()}).Return(&corev1.PodList{
-		Items: []corev1.Pod{
-			{
-				ObjectMeta: metav1.ObjectMeta{
-					Name: "new-runner",
-					UID:  "new-uid",
-				},
-			},
-		},
+	// isRunnerIdle fetches each pod by name; a terminated runner container
+	// marks the runner idle and eligible for cleanup
+	terminated := func(p corev1.Pod) *corev1.Pod {
+		p.Status.ContainerStatuses = []corev1.ContainerStatus{{
+			Name:  "runner",
+			State: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{}},
+		}}
+		return &p
+	}
+	mockPod.On("Get", mock.Anything, "old-runner", mock.Anything).Return(terminated(oldRunner), nil)
+	mockPod.On("Get", mock.Anything, "new-runner", mock.Anything).Return(terminated(newRunner), nil)
+
+	// StopRunner is called with each pod UID: the by-name Get misses, then the
+	// pod is found by UID in the runner pod list
+	mockPod.On("Get", mock.Anything, "old-uid", mock.Anything).Return(nil, podNotFound("old-uid"))
+	mockPod.On("Get", mock.Anything, "new-uid", mock.Anything).Return(nil, podNotFound("new-uid"))
+	mockPod.On("List", mock.Anything, metav1.ListOptions{LabelSelector: "app=github-runner"}).Return(&corev1.PodList{
+		Items: []corev1.Pod{oldRunner, newRunner},
 	}, nil)
 
 	// Mock the Pod Delete calls for both pods (since both are older than 0 duration)
@@ -1219,7 +1200,8 @@ func TestKubernetesRuntime_GetContainerLogs_NotFound(t *testing.T) {
 	}
 
 	// Mock the Pod List call to return empty list (pod not found)
-	mockPod.On("List", mock.Anything, metav1.ListOptions{FieldSelector: fields.OneTermEqualSelector("metadata.uid", "nonexistent-uid").String()}).Return(&corev1.PodList{Items: []corev1.Pod{}}, nil)
+	mockPod.On("Get", mock.Anything, "nonexistent-uid", mock.Anything).Return(nil, podNotFound("nonexistent-uid"))
+	mockPod.On("List", mock.Anything, metav1.ListOptions{LabelSelector: "app=github-runner"}).Return(&corev1.PodList{Items: []corev1.Pod{}}, nil)
 
 	// Call GetContainerLogs
 	logs, err := kr.GetContainerLogs("nonexistent-uid", 100)
@@ -1243,9 +1225,8 @@ func TestKubernetesRuntime_GetRunnerRepository(t *testing.T) {
 	}
 
 	// Mock the Pod List call to find the pod by UID with repo-full-name annotation
-	mockPod.On("List", mock.Anything, metav1.ListOptions{
-		FieldSelector: fields.OneTermEqualSelector("metadata.uid", "test-uid").String(),
-	}).Return(&corev1.PodList{
+	mockPod.On("Get", mock.Anything, "test-uid", mock.Anything).Return(nil, podNotFound("test-uid"))
+	mockPod.On("List", mock.Anything, metav1.ListOptions{LabelSelector: "app=github-runner"}).Return(&corev1.PodList{
 		Items: []corev1.Pod{
 			{
 				ObjectMeta: metav1.ObjectMeta{
@@ -1278,9 +1259,8 @@ func TestKubernetesRuntime_GetRunnerRepositoryFromEnv(t *testing.T) {
 	}
 
 	// Mock the Pod List call to find the pod by UID without annotations but with env vars
-	mockPod.On("List", mock.Anything, metav1.ListOptions{
-		FieldSelector: fields.OneTermEqualSelector("metadata.uid", "test-uid").String(),
-	}).Return(&corev1.PodList{
+	mockPod.On("Get", mock.Anything, "test-uid", mock.Anything).Return(nil, podNotFound("test-uid"))
+	mockPod.On("List", mock.Anything, metav1.ListOptions{LabelSelector: "app=github-runner"}).Return(&corev1.PodList{
 		Items: []corev1.Pod{
 			{
 				ObjectMeta: metav1.ObjectMeta{
@@ -1320,9 +1300,8 @@ func TestKubernetesRuntime_GetRunnerRepositoryFromURL(t *testing.T) {
 	}
 
 	// Mock the Pod List call to find the pod by UID without annotations but with REPO_URL env var
-	mockPod.On("List", mock.Anything, metav1.ListOptions{
-		FieldSelector: fields.OneTermEqualSelector("metadata.uid", "test-uid").String(),
-	}).Return(&corev1.PodList{
+	mockPod.On("Get", mock.Anything, "test-uid", mock.Anything).Return(nil, podNotFound("test-uid"))
+	mockPod.On("List", mock.Anything, metav1.ListOptions{LabelSelector: "app=github-runner"}).Return(&corev1.PodList{
 		Items: []corev1.Pod{
 			{
 				ObjectMeta: metav1.ObjectMeta{
@@ -1362,9 +1341,8 @@ func TestKubernetesRuntime_GetRunnerRepository_NotFound(t *testing.T) {
 	}
 
 	// Mock the Pod List call to return empty list (pod not found)
-	mockPod.On("List", mock.Anything, metav1.ListOptions{
-		FieldSelector: fields.OneTermEqualSelector("metadata.uid", "nonexistent-uid").String(),
-	}).Return(&corev1.PodList{Items: []corev1.Pod{}}, nil)
+	mockPod.On("Get", mock.Anything, "nonexistent-uid", mock.Anything).Return(nil, podNotFound("nonexistent-uid"))
+	mockPod.On("List", mock.Anything, metav1.ListOptions{LabelSelector: "app=github-runner"}).Return(&corev1.PodList{Items: []corev1.Pod{}}, nil)
 
 	repo, err := kr.GetRunnerRepository("nonexistent-uid")
 

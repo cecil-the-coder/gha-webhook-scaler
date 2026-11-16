@@ -35,7 +35,7 @@ func TestEdgeCases_RealHandlerFunctions(t *testing.T) {
 	})
 
 	t.Run("handlePushEvent with various payloads", func(t *testing.T) {
-		handler := &Handler{}
+		handler := &Handler{config: &config.Config{}}
 
 		// Test valid push payload
 		pushPayload := map[string]interface{}{
@@ -67,7 +67,7 @@ func TestEdgeCases_RealHandlerFunctions(t *testing.T) {
 	})
 
 	t.Run("handleWorkflowJobEvent with various payloads", func(t *testing.T) {
-		handler := &Handler{}
+		handler := &Handler{config: &config.Config{}}
 
 		// Test valid workflow job payload
 		jobPayload := map[string]interface{}{
@@ -106,7 +106,7 @@ func TestEdgeCases_RealHandlerFunctions(t *testing.T) {
 	})
 
 	t.Run("handleDebouncedEvent with all event types", func(t *testing.T) {
-		handler := &Handler{}
+		handler := &Handler{config: &config.Config{}}
 
 		// Test workflow_run event
 		payload := map[string]interface{}{
