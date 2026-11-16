@@ -1,6 +1,7 @@
 package config
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"runtime"
@@ -15,6 +16,8 @@ type RuntimeType string
 const (
 	RuntimeTypeDocker     RuntimeType = "docker"
 	RuntimeTypeKubernetes RuntimeType = "kubernetes"
+	// RuntimeTypeNone runs no local runners: every job goes to burst VMs.
+	RuntimeTypeNone RuntimeType = "none"
 )
 
 type Config struct {
@@ -29,8 +32,11 @@ type Config struct {
 	RunnerImage     string
 
 	// Server configuration
-	Port  int
-	Debug bool
+	Port        int
+	BindAddress string // empty = all interfaces
+	TLSCertFile string // serve HTTPS when both are set
+	TLSKeyFile  string
+	Debug       bool
 
 	// Runtime configuration
 	Runtime       RuntimeType
@@ -58,6 +64,10 @@ type Config struct {
 	// Burst runners on cloud VMs (internal/burst); off unless BURST_PROVIDER is set
 	Burst BurstConfig
 
+	// loadErrors are problems found while reading env (e.g. an unreadable
+	// *_FILE secret); Validate reports them.
+	loadErrors []error
+
 }
 
 func NewConfig() *Config {
@@ -70,7 +80,10 @@ func NewConfig() *Config {
 		Architecture:  detectArchitecture(),
 		RunnerImage:   getEnv("RUNNER_IMAGE", "myoung34/github-runner:ubuntu-noble"),
 
-		Port:  getEnvInt("PORT", 8080),
+		Port:        getEnvInt("PORT", 8080),
+		BindAddress: getEnv("BIND_ADDRESS", ""),
+		TLSCertFile: getEnv("TLS_CERT_FILE", ""),
+		TLSKeyFile:  getEnv("TLS_KEY_FILE", ""),
 		Debug: getEnvBool("DEBUG", false),
 
 		Runtime: parseRuntimeType(getEnv("RUNTIME", "docker")),
@@ -105,7 +118,7 @@ func NewConfig() *Config {
 func (c *Config) loadOwnerConfig() {
 	// Try to load from OWNERS environment variable first (comma-separated list)
 	ownersList := getEnvSlice("OWNERS", []string{})
-	globalWebhookSecret := getEnv("WEBHOOK_SECRET", "")
+	globalWebhookSecret := c.getSecret("WEBHOOK_SECRET", "")
 
 	if len(ownersList) > 0 {
 		// Load owner-specific configuration using OWNER_* prefixed env vars
@@ -122,11 +135,12 @@ func (c *Config) loadOwnerConfig() {
 
 			ownerConfig := &OwnerConfig{
 				Owner:         owner,
-				GitHubToken:   getEnv(prefix+"GITHUB_TOKEN", ""),
-				WebhookSecret: getEnv(prefix+"WEBHOOK_SECRET", globalWebhookSecret), // Fall back to global
+				GitHubToken:   c.getSecret(prefix+"GITHUB_TOKEN", ""),
+				WebhookSecret: c.getSecret(prefix+"WEBHOOK_SECRET", globalWebhookSecret), // Fall back to global
 				AllRepos:      getEnvBool(prefix+"ALL_REPOS", false),
 				RepoName:      getEnv(prefix+"REPO_NAME", ""),
 				Burst:         getEnvBool(prefix+"BURST", true),
+				BurstRepos:    getEnvList(prefix+"BURST_REPOS", nil),
 				RunnerGroupID: int64(getEnvInt(prefix+"RUNNER_GROUP_ID", 1)),
 			}
 
@@ -149,7 +163,7 @@ func (c *Config) loadOwnerConfig() {
 	} else {
 		// Backward compatibility: try to load from legacy REPO_OWNER/GITHUB_TOKEN env vars
 		repoOwner := getEnv("REPO_OWNER", "")
-		githubToken := getEnv("GITHUB_TOKEN", "")
+		githubToken := c.getSecret("GITHUB_TOKEN", "")
 
 		if githubToken != "" && repoOwner != "" {
 			fmt.Printf("DEBUG: Using legacy configuration for owner: %s\n", repoOwner)
@@ -160,6 +174,7 @@ func (c *Config) loadOwnerConfig() {
 				AllRepos:      getEnvBool("ALL_REPOS", false),
 				RepoName:      getEnv("REPO_NAME", ""),
 				Burst:         true,
+				BurstRepos:    getEnvList("BURST_REPOS", nil),
 				RunnerGroupID: int64(getEnvInt("RUNNER_GROUP_ID", 1)),
 			}
 			c.Owners[repoOwner] = ownerConfig
@@ -168,6 +183,9 @@ func (c *Config) loadOwnerConfig() {
 }
 
 func (c *Config) Validate() error {
+	if len(c.loadErrors) > 0 {
+		return errors.Join(c.loadErrors...)
+	}
 	// Validate that at least one owner is configured
 	if len(c.Owners) == 0 {
 		return fmt.Errorf("at least one owner must be configured (use OWNERS=owner1,owner2 or legacy REPO_OWNER/GITHUB_TOKEN)")
@@ -190,6 +208,12 @@ func (c *Config) Validate() error {
 
 	if err := c.Burst.Validate(); err != nil {
 		return err
+	}
+	if c.Runtime == RuntimeTypeNone && !c.Burst.Enabled() {
+		return fmt.Errorf("RUNTIME=none needs burst runners (set BURST_PROVIDER)")
+	}
+	if (c.TLSCertFile == "") != (c.TLSKeyFile == "") {
+		return fmt.Errorf("TLS_CERT_FILE and TLS_KEY_FILE must be set together")
 	}
 
 	// Validate job scan interval (warn if too frequent)
@@ -315,6 +339,20 @@ func (c *Config) GetEffectiveArchitecture() string {
 	}
 }
 
+// getSecret returns the value of key, or the trimmed contents of the file
+// named by key_FILE (for secrets kept in root-only files or mounted secrets).
+func (c *Config) getSecret(key, defaultValue string) string {
+	if path := os.Getenv(key + "_FILE"); path != "" {
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			c.loadErrors = append(c.loadErrors, fmt.Errorf("%s_FILE: %w", key, err))
+			return ""
+		}
+		return strings.TrimSpace(string(raw))
+	}
+	return getEnv(key, defaultValue)
+}
+
 func getEnv(key, defaultValue string) string {
 	if value := os.Getenv(key); value != "" {
 		return value
@@ -354,6 +392,8 @@ func parseRuntimeType(runtimeStr string) RuntimeType {
 		return RuntimeTypeDocker
 	case "kubernetes", "k8s":
 		return RuntimeTypeKubernetes
+	case "none":
+		return RuntimeTypeNone
 	default:
 		return RuntimeTypeDocker // Default to Docker for backward compatibility
 	}

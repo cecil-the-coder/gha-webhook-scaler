@@ -21,6 +21,7 @@ type OwnerConfig struct {
 	// Burst runners (only used when BURST_PROVIDER is set)
 	Burst         bool  // let this owner's jobs overflow to burst VMs (default true)
 	RunnerGroupID int64 // org runner group burst runners join (organizations only; default 1)
+	BurstRepos    []string // repos burst always reads (names, no owner); others only after webhook activity
 }
 
 // Validate validates the owner configuration

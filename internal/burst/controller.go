@@ -218,6 +218,13 @@ func (c *Controller) pollRepos(now time.Time) []string {
 		if oc.Burst && !oc.AllRepos && oc.RepoName != "" {
 			set[oc.Owner+"/"+oc.RepoName] = true
 		}
+		if oc.Burst {
+			for _, r := range oc.BurstRepos {
+				if full := oc.Owner + "/" + r; oc.IsRepoAllowed(full) {
+					set[full] = true
+				}
+			}
+		}
 	}
 	c.mu.Lock()
 	for repo, at := range c.active {

@@ -1,6 +1,7 @@
 package config
 
 import (
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -234,6 +235,74 @@ func TestArchForMachineType(t *testing.T) {
 	for _, c := range cases {
 		if got := archForMachineType(c.provider, c.mt); got != c.want {
 			t.Errorf("%s %s: arch %s, want %s", c.provider, c.mt, got, c.want)
+		}
+	}
+}
+
+func TestRuntimeNoneSecretsFilesAndBurstRepos(t *testing.T) {
+	dir := t.TempDir()
+	tok := dir + "/pat"
+	if err := os.WriteFile(tok, []byte("  ghp_fromfile\n"), 0o400); err != nil {
+		t.Fatal(err)
+	}
+	burstEnv(t, map[string]string{
+		"RUNTIME":                        "none",
+		"OWNERS":                         "my-org",
+		"OWNER_MY_ORG_GITHUB_TOKEN_FILE": tok,
+		"OWNER_MY_ORG_ALL_REPOS":         "true",
+		"OWNER_MY_ORG_BURST_REPOS":       "app, lib",
+		"BURST_POOL_X64_RUNNER_DIR":      "/home/ghrunner/actions-runner",
+		"BURST_POOL_X64_RUNNER_USER":     "ghrunner",
+	})
+	c := NewConfig()
+	if err := c.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	oc := c.Owners["my-org"]
+	if c.Runtime != RuntimeTypeNone || oc.GitHubToken != "ghp_fromfile" {
+		t.Errorf("runtime=%s token=%q", c.Runtime, oc.GitHubToken)
+	}
+	if strings.Join(oc.BurstRepos, ",") != "app,lib" {
+		t.Errorf("burst repos = %v", oc.BurstRepos)
+	}
+	if p := c.Burst.Pools[0]; p.RunnerDir != "/home/ghrunner/actions-runner" || p.RunnerUser != "ghrunner" {
+		t.Errorf("pool = %+v", p)
+	}
+}
+
+func TestLoadErrorsAndPairs(t *testing.T) {
+	t.Setenv("OWNERS", "acme")
+	t.Setenv("OWNER_ACME_GITHUB_TOKEN_FILE", "/nonexistent/pat")
+	t.Setenv("OWNER_ACME_ALL_REPOS", "true")
+	if err := NewConfig().Validate(); err == nil || !strings.Contains(err.Error(), "GITHUB_TOKEN_FILE") {
+		t.Errorf("unreadable secret file must fail validation, got %v", err)
+	}
+
+	t.Setenv("OWNER_ACME_GITHUB_TOKEN_FILE", "")
+	t.Setenv("OWNER_ACME_GITHUB_TOKEN", "x")
+	t.Setenv("RUNTIME", "none")
+	t.Setenv("BURST_PROVIDER", "")
+	if err := NewConfig().Validate(); err == nil {
+		t.Error("RUNTIME=none without burst must fail")
+	}
+	t.Setenv("RUNTIME", "docker")
+	t.Setenv("TLS_CERT_FILE", "/x.crt")
+	if err := NewConfig().Validate(); err == nil {
+		t.Error("TLS cert without key must fail")
+	}
+}
+
+func TestRunnerDirUserValidation(t *testing.T) {
+	for _, kv := range []map[string]string{
+		{"BURST_POOL_X64_RUNNER_DIR": "relative/path"},
+		{"BURST_POOL_X64_RUNNER_DIR": "/opt/../etc"},
+		{"BURST_POOL_X64_RUNNER_DIR": "/opt/a b"},
+		{"BURST_POOL_X64_RUNNER_USER": "root"},
+		{"BURST_POOL_X64_RUNNER_USER": "Bad User"},
+	} {
+		burstEnv(t, kv)
+		if err := loadBurstConfig().Validate(); err == nil {
+			t.Errorf("want error for %v", kv)
 		}
 	}
 }

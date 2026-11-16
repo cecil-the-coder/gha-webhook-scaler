@@ -86,6 +86,14 @@ func (rm *Manager) ScaleUpWithLabels(reason string, repoFullName string, repoNam
 		return fmt.Errorf("failed to get owner config for repo %s: %w", repoFullName, err)
 	}
 
+	// RUNTIME=none: no local runners. Hand the job straight to burst runners.
+	if rm.runtime != nil && rm.runtime.GetRuntimeType() == config.RuntimeTypeNone {
+		if rm.overflow != nil {
+			rm.overflow.Saturated(ownerConfig.Owner, repoFullName)
+		}
+		return nil
+	}
+
 	// Get the GitHub client for this owner
 	githubClient, exists := rm.githubClients[ownerConfig.Owner]
 	if !exists {

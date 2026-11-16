@@ -419,7 +419,13 @@ before it naming the failed check (for example `caller role` when
 | `BURST_GCE_SPOT` | `true` | Spot VMs (deleted on preemption) |
 | `BURST_GCE_EXTERNAL_IP` | `true` | Ephemeral public IP (needed without Cloud NAT) |
 | `BURST_GCE_VM_PREFIX` | `gha-burst` | VM names are `<prefix>-<pool>-<8 hex>`. Use a different prefix per scaler sharing a project. |
+| `BURST_POOL_<X>_RUNNER_DIR` | `/opt/actions-runner` | Where a baked image keeps the runner (installed here on stock images) |
+| `BURST_POOL_<X>_RUNNER_USER` | `runner` | Unprivileged user the runner runs as (not root) |
 | `OWNER_<X>_BURST` | `true` | Let this owner's jobs burst |
+| `OWNER_<X>_BURST_REPOS` | | Repos (names only) burst always reads, even without webhook activity. Needed for `ALL_REPOS` owners when no webhook is set up. |
+| `OWNER_<X>_GITHUB_TOKEN_FILE` | | Read the token from a file instead (any `*_TOKEN`/`*_SECRET` setting also accepts `_FILE`) |
+| `RUNTIME=none` | | No local runners: every job goes to burst VMs (use with `BURST_AFTER=0`) |
+| `BIND_ADDRESS`, `TLS_CERT_FILE`, `TLS_KEY_FILE` | all interfaces, plain HTTP | Listen address, and HTTPS for the scaler itself |
 | `OWNER_<X>_RUNNER_GROUP_ID` | `1` | Org runner group for burst runners |
 
 ## Known limits

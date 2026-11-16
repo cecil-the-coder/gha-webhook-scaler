@@ -120,6 +120,12 @@ try:
     ver = s.get("runner_version") or "latest"
     docker = s.get("install_docker", True)
     env = s.get("runner_env") or []
+    rdir = s.get("runner_dir") or "/opt/actions-runner"
+    ruser = s.get("runner_user") or "runner"
+    if not isinstance(rdir, str) or not re.fullmatch(r"/[A-Za-z0-9._/-]+", rdir) or ".." in rdir:
+        raise ValueError("runner_dir")
+    if not isinstance(ruser, str) or not re.fullmatch(r"[a-z_][a-z0-9_-]{0,31}", ruser) or ruser == "root":
+        raise ValueError("runner_user")
     if not isinstance(url, str) or not re.fullmatch(r"https://[A-Za-z0-9.-]+(:[0-9]{1,5})?/v1/runner-config", url):
         raise ValueError("config_url")
     if not isinstance(ver, str) or not re.fullmatch(r"latest|[0-9]+\.[0-9]+\.[0-9]+", ver):
@@ -139,15 +145,25 @@ with open(sys.argv[1], "w") as f:
 print(url)
 print(ver)
 print("true" if docker else "false")
+print(rdir)
+print(ruser)
 '
 {
   read -r CONFIG_URL
   read -r RUNNER_VERSION
   read -r INSTALL_DOCKER
+  read -r SET_RUNNER_DIR
+  read -r SET_RUNNER_USER
 } < <(python3 -I -c "$SETTINGS_PY" "$WORK/runner.env" "$SETTINGS_B64" || echo FAILED)
 if [[ -z "${CONFIG_URL:-}" || "$CONFIG_URL" == FAILED || -z "${INSTALL_DOCKER:-}" ]]; then
   log "step=settings status=failed"
   exit 1
+fi
+# Test mode keeps its BURST_RUNNER_* hooks; production takes the pool's values.
+if (( ! TEST_MODE )); then
+  RUNNER_DIR="$SET_RUNNER_DIR"
+  RUNNER_USER="$SET_RUNNER_USER"
+  AS_RUNNER=(setpriv --reset-env --reuid="$RUNNER_USER" --regid="$RUNNER_USER" --init-groups --)
 fi
 
 # ── 2. Runner user, Docker and the runner itself (stock images only) ────────
@@ -155,6 +171,8 @@ if (( ! SKIP_SYSTEM )); then
   if ! id -u "$RUNNER_USER" >/dev/null 2>&1; then
     useradd -m -s /bin/bash "$RUNNER_USER" || { log "step=user status=failed"; exit 1; }
   fi
+  RUNNER_HOME="$(getent passwd "$RUNNER_USER" | cut -d: -f6)"
+  [[ -n "$RUNNER_HOME" ]] || { log "step=user status=no-home"; exit 1; }
   if [[ "$INSTALL_DOCKER" == true ]] && ! command -v docker >/dev/null; then
     log "step=docker status=installing"
     export DEBIAN_FRONTEND=noninteractive

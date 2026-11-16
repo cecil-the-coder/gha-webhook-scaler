@@ -81,6 +81,11 @@ type BurstPool struct {
 	// image-specific env (e.g. BUILDX_BUILDER). It travels in PUBLIC instance
 	// metadata, so credential-looking names are refused.
 	RunnerEnv []string // NAME=VALUE
+
+	// Where a baked image keeps the runner, and the user it runs as. Stock
+	// images get the runner installed here.
+	RunnerDir  string
+	RunnerUser string
 }
 
 // GCEConfig holds the Compute Engine settings. Credentials come from
@@ -256,6 +261,8 @@ func loadBurstConfig() BurstConfig {
 			DiskGB:      getEnvInt(env+"DISK_GB", 50),
 			Prefix:      fmt.Sprintf("%s-%s-", b.vmPrefix(), name),
 			RunnerEnv:   splitEnvPairs(getEnv(env+"RUNNER_ENV", "")),
+			RunnerDir:   getEnv(env+"RUNNER_DIR", "/opt/actions-runner"),
+			RunnerUser:  getEnv(env+"RUNNER_USER", "runner"),
 		}
 		if p.Arch == "" {
 			p.Arch = archForMachineType(b.Provider, p.MachineType)
@@ -345,6 +352,12 @@ func (b BurstConfig) Validate() error {
 		if p.DiskGB < 10 {
 			return fmt.Errorf("burst pool %s: disk must be at least 10 GB", p.Name)
 		}
+		if !runnerDirRE.MatchString(p.RunnerDir) || strings.Contains(p.RunnerDir, "..") {
+			return fmt.Errorf("BURST_POOL_%s_RUNNER_DIR %q must be an absolute path", strings.ToUpper(p.Name), p.RunnerDir)
+		}
+		if !runnerUserRE.MatchString(p.RunnerUser) || p.RunnerUser == "root" {
+			return fmt.Errorf("BURST_POOL_%s_RUNNER_USER %q must be a non-root user name", strings.ToUpper(p.Name), p.RunnerUser)
+		}
 		if err := validateRunnerEnv(p.RunnerEnv); err != nil {
 			return fmt.Errorf("BURST_POOL_%s_RUNNER_ENV: %w", strings.ToUpper(p.Name), err)
 		}
@@ -394,6 +407,8 @@ func (a AWSConfig) validate() error {
 	return nil
 }
 
+var runnerDirRE = regexp.MustCompile(`^/[A-Za-z0-9._/-]+$`)
+var runnerUserRE = regexp.MustCompile(`^[a-z_][a-z0-9_-]{0,31}$`)
 var envLineRE = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*=[^[:cntrl:]]*$`)
 var secretNameRE = regexp.MustCompile(`(?i)TOKEN|SECRET|KEY|PASSW|AUTH|CREDENTIAL|PAT`)
 

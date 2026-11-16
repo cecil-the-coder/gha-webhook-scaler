@@ -372,3 +372,14 @@ func TestWakeNeverBlocks(t *testing.T) {
 		t.Errorf("wakes must merge, buffered=%d", len(h.c.wake))
 	}
 }
+
+func TestTick_BurstReposAlwaysPolled(t *testing.T) {
+	cfg := testConfig(t)
+	cfg.Owners["acme"].BurstRepos = []string{"app"}
+	h := newHarness(t, cfg)
+	h.job("acme/app", time.Hour, "self-hosted", "x64")
+	h.tick(t) // no webhook activity, but app is in BURST_REPOS
+	if h.vmsInPool("x64") != 1 {
+		t.Fatalf("BURST_REPOS repo must be polled without activity, got %d VMs", h.vmsInPool("x64"))
+	}
+}

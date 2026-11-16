@@ -4,9 +4,11 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"syscall"
 	"time"
 
@@ -193,8 +195,9 @@ func (app *Application) Start() error {
 	router := app.SetupRouter()
 
 	app.Server = &http.Server{
-		Addr:    fmt.Sprintf(":%d", app.Config.Port),
-		Handler: router,
+		Addr:              net.JoinHostPort(app.Config.BindAddress, strconv.Itoa(app.Config.Port)),
+		Handler:           router,
+		ReadHeaderTimeout: 10 * time.Second,
 	}
 
 	// Start background cleanup routine for all runtimes
@@ -218,7 +221,13 @@ func (app *Application) Start() error {
 
 	// Start server in a goroutine
 	go func() {
-		if err := app.Server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		var err error
+		if app.Config.TLSCertFile != "" {
+			err = app.Server.ListenAndServeTLS(app.Config.TLSCertFile, app.Config.TLSKeyFile)
+		} else {
+			err = app.Server.ListenAndServe()
+		}
+		if err != nil && err != http.ErrServerClosed {
 			log.Fatalf("Failed to start server: %v", err)
 		}
 	}()
@@ -269,7 +278,7 @@ func (app *Application) setupWebhooks() error {
 // logStartupInfo logs application startup information
 func (app *Application) logStartupInfo() {
 	log.Printf("Starting GitHub Actions Auto-Scaler v%s (revision: %s, built: %s)", Version, Revision, BuildTime)
-	log.Printf("Server starting on port %d", app.Config.Port)
+	log.Printf("Server starting on port %d (bind: %q, TLS: %v)", app.Config.Port, app.Config.BindAddress, app.Config.TLSCertFile != "")
 	log.Printf("Container runtime: %s", app.Config.Runtime)
 
 	// Log owner configuration

@@ -14,6 +14,8 @@
 #   runner-config-url  https://<host>/v1/runner-config; also the token audience
 #   runner-version     "latest" or a version such as 2.330.0
 #   install-docker     true/false
+#   runner-dir         where the runner lives (default /opt/actions-runner)
+#   runner-user        the unprivileged user it runs as (default runner)
 #   runner-env         optional NAME=VALUE lines for the runner's .env
 #
 # RETRY RULE. The scaler issues one config per VM; a second request gets 409.
@@ -55,12 +57,6 @@ else
   GITHUB_API="https://api.github.com"
   TEST_CA=""
   SKIP_SYSTEM=0
-fi
-
-if (( TEST_MODE )); then
-  AS_RUNNER=()
-else
-  AS_RUNNER=(setpriv --reset-env --reuid="$RUNNER_USER" --regid="$RUNNER_USER" --init-groups --)
 fi
 
 WORK=""
@@ -115,6 +111,24 @@ if ! [[ "$RUNNER_VERSION" =~ ^(latest|[0-9]+\.[0-9]+\.[0-9]+)$ ]]; then
 fi
 INSTALL_DOCKER="true"
 if meta_opt install-docker; then INSTALL_DOCKER="$META_VAL"; fi
+if (( ! TEST_MODE )); then
+  if meta_opt runner-dir; then RUNNER_DIR="$META_VAL"; fi
+  if meta_opt runner-user; then RUNNER_USER="$META_VAL"; fi
+fi
+if ! [[ "$RUNNER_DIR" =~ ^/[A-Za-z0-9._/-]+$ && "$RUNNER_DIR" != *..* ]]; then
+  log "step=metadata status=runner-dir-malformed"
+  exit 1
+fi
+if ! [[ "$RUNNER_USER" =~ ^[a-z_][a-z0-9_-]{0,31}$ && "$RUNNER_USER" != root ]]; then
+  log "step=metadata status=runner-user-malformed"
+  exit 1
+fi
+
+if (( TEST_MODE )); then
+  AS_RUNNER=()
+else
+  AS_RUNNER=(setpriv --reset-env --reuid="$RUNNER_USER" --regid="$RUNNER_USER" --init-groups --)
+fi
 
 command -v python3 >/dev/null || { log "step=start status=no-python3"; exit 1; }
 install -d -m 0755 "$RUN_DIR" || { log "step=workdir status=run-dir-failed"; exit 1; }
@@ -125,6 +139,8 @@ if (( ! SKIP_SYSTEM )); then
   if ! id -u "$RUNNER_USER" >/dev/null 2>&1; then
     useradd -m -s /bin/bash "$RUNNER_USER" || { log "step=user status=failed"; exit 1; }
   fi
+  RUNNER_HOME="$(getent passwd "$RUNNER_USER" | cut -d: -f6)"
+  [[ -n "$RUNNER_HOME" ]] || { log "step=user status=no-home"; exit 1; }
   if [[ "$INSTALL_DOCKER" == true ]] && ! command -v docker >/dev/null; then
     log "step=docker status=installing"
     export DEBIAN_FRONTEND=noninteractive

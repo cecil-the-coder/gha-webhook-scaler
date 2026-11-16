@@ -197,6 +197,8 @@ func (p *Provider) metadata(pool config.BurstPool) []*computepb.Items {
 		item("runner-config-url", p.cfg.PublicURL),
 		item("runner-version", p.cfg.RunnerVersion),
 		item("install-docker", strconv.FormatBool(p.cfg.InstallDocker)),
+		item("runner-dir", pool.RunnerDir),
+		item("runner-user", pool.RunnerUser),
 	}
 	if len(pool.RunnerEnv) > 0 {
 		items = append(items, item("runner-env", strings.Join(pool.RunnerEnv, "\n")))

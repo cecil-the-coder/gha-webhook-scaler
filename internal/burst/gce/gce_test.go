@@ -59,7 +59,8 @@ func testProvider(api *fakeAPI) *Provider {
 
 var pool = config.BurstPool{Name: "arm", MachineType: "t2a-standard-4",
 	Image: "projects/ubuntu-os-cloud/global/images/family/ubuntu-2404-lts-arm64", Arch: "arm64",
-	DiskGB: 40, Prefix: "gha-burst-arm-", RunnerEnv: []string{"A=1", "B=two"}}
+	DiskGB: 40, Prefix: "gha-burst-arm-", RunnerEnv: []string{"A=1", "B=two"},
+	RunnerDir: "/home/ghrunner/actions-runner", RunnerUser: "ghrunner"}
 
 func TestCreate_RequestShape(t *testing.T) {
 	api := &fakeAPI{op: fakeOp{pb: &computepb.Operation{Name: proto.String("op-1")}}}
@@ -102,13 +103,14 @@ func TestCreate_RequestShape(t *testing.T) {
 		meta[it.GetKey()] = it.GetValue()
 	}
 	want := map[string]string{"runner-config-url": "https://scaler.example.com/v1/runner-config",
-		"runner-version": "latest", "install-docker": "true", "runner-env": "A=1\nB=two"}
+		"runner-version": "latest", "install-docker": "true", "runner-env": "A=1\nB=two",
+		"runner-dir": "/home/ghrunner/actions-runner", "runner-user": "ghrunner"}
 	for k, v := range want {
 		if meta[k] != v {
 			t.Errorf("metadata %s = %q, want %q", k, meta[k], v)
 		}
 	}
-	if !strings.HasPrefix(meta["startup-script"], "#!/bin/bash") || len(meta) != 5 {
+	if !strings.HasPrefix(meta["startup-script"], "#!/bin/bash") || len(meta) != 7 {
 		t.Errorf("metadata keys = %d, startup-script ok = %v", len(meta), strings.HasPrefix(meta["startup-script"], "#!"))
 	}
 }

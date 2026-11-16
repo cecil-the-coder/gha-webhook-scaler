@@ -263,6 +263,8 @@ type vmSettings struct {
 	RunnerVersion string   `json:"runner_version"`
 	InstallDocker bool     `json:"install_docker"`
 	RunnerEnv     []string `json:"runner_env"`
+	RunnerDir     string   `json:"runner_dir,omitempty"`
+	RunnerUser    string   `json:"runner_user,omitempty"`
 }
 
 // userData renders the bootstrap with the pool's settings, gzipped (cloud-init
@@ -292,6 +294,8 @@ func RenderUserData(cfg config.BurstConfig, pool config.BurstPool) (string, erro
 		RunnerVersion: cfg.RunnerVersion,
 		InstallDocker: cfg.InstallDocker,
 		RunnerEnv:     append([]string{}, pool.RunnerEnv...),
+		RunnerDir:     pool.RunnerDir,
+		RunnerUser:    pool.RunnerUser,
 	})
 	if err != nil {
 		return "", err
