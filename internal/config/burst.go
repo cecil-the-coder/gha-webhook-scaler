@@ -11,20 +11,28 @@ import (
 
 // Burst runners: ephemeral cloud VMs that take queued jobs the primary
 // runtime (Docker/Kubernetes) has not picked up. Off unless BURST_PROVIDER is set.
-// See docs/gce-burst.md.
+// See docs/burst-runners.md.
 
 const (
 	BurstProviderNone = ""
 	BurstProviderGCE  = "gce"
+	BurstProviderAWS  = "aws"
 
 	// RunnerConfigPath is the path VMs POST to for their one JIT runner config.
 	RunnerConfigPath = "/v1/runner-config"
 
 	defaultImageX64   = "projects/ubuntu-os-cloud/global/images/family/ubuntu-2404-lts-amd64"
 	defaultImageARM64 = "projects/ubuntu-os-cloud/global/images/family/ubuntu-2404-lts-arm64"
+
+	// Canonical's public SSM parameters for the current Ubuntu 24.04 AMIs.
+	defaultAWSImageX64   = "/aws/service/canonical/ubuntu/server/24.04/stable/current/amd64/hvm/ebs-gp3/ami-id"
+	defaultAWSImageARM64 = "/aws/service/canonical/ubuntu/server/24.04/stable/current/arm64/hvm/ebs-gp3/ami-id"
+
+	defaultMachineTypeGCE = "e2-standard-4"
+	defaultMachineTypeAWS = "m7i.xlarge"
 )
 
-// BurstConfig holds the provider-neutral burst settings plus the GCE ones.
+// BurstConfig holds the provider-neutral burst settings plus the provider ones.
 type BurstConfig struct {
 	Provider string
 
@@ -54,13 +62,14 @@ type BurstConfig struct {
 
 	Pools []BurstPool
 	GCE   GCEConfig
+	AWS   AWSConfig
 }
 
 // BurstPool is one group of identical VMs.
 type BurstPool struct {
 	Name        string
-	MachineType string
-	Image       string
+	MachineType string   // GCE machine type or EC2 instance type
+	Image       string   // GCE image; on AWS an AMI ID or an SSM parameter path
 	Arch        string   // "x64" or "arm64"
 	Labels      []string // extra runner labels, beyond self-hosted, Linux and the arch
 	MaxVMs      int
@@ -86,6 +95,25 @@ type GCEConfig struct {
 	Spot             bool
 	ExternalIP       bool // give VMs an ephemeral public IP (needed for egress without Cloud NAT)
 	VMPrefix         string
+}
+
+// AWSConfig holds the EC2 settings. Credentials come from the SDK's default
+// chain (env, shared config, web identity, ECS/EC2 role).
+type AWSConfig struct {
+	Region           string
+	SubnetIDs        []string // one is picked per VM; capacity errors move on to the next
+	SecurityGroupIDs []string // empty = the VPC's default group
+	// InstanceProfile is the IAM instance profile (name or ARN) the VMs run as.
+	// Its role needs no permissions: VMs only use it to prove who they are.
+	InstanceProfile string
+	// InstanceRole is the role inside InstanceProfile, as it appears in the
+	// VM's assumed-role ARN. Defaults to the profile's name.
+	InstanceRole      string
+	Spot              bool
+	AssociatePublicIP *bool // nil = the subnet's default
+	VMPrefix          string
+
+	publicIPRaw string // unparseable BURST_AWS_ASSOCIATE_PUBLIC_IP, reported by Validate
 }
 
 // Enabled reports whether burst runners are on.
@@ -118,16 +146,63 @@ func (b BurstConfig) PoolFor(name string) (BurstPool, bool) {
 var poolNameRE = regexp.MustCompile(`^[a-z][a-z0-9]{0,11}$`)
 var vmPrefixRE = regexp.MustCompile(`^[a-z][a-z0-9-]{0,30}[a-z0-9]$`)
 
-// armFamilies are machine families with Arm CPUs.
+// armFamilies are GCE machine families with Arm CPUs.
 var armFamilies = []string{"t2a-", "c4a-", "n4a-"}
 
-func archForMachineType(mt string) string {
+// ec2FamilyRE splits an EC2 instance family ("c7gn") into its series letters,
+// generation and attribute letters ("gn").
+var ec2FamilyRE = regexp.MustCompile(`^([a-z]+)([0-9]+)([a-z-]*)$`)
+
+func archForMachineType(provider, mt string) string {
+	if provider == BurstProviderAWS {
+		// Graviton types carry a "g" in the attributes after the generation
+		// (t4g, m7g, c7gn, r8gd, im4gn, is4gen, g5g); a1 is the first Graviton.
+		family, _, _ := strings.Cut(strings.ToLower(mt), ".")
+		if family == "a1" {
+			return "arm64"
+		}
+		if m := ec2FamilyRE.FindStringSubmatch(family); m != nil && strings.Contains(m[3], "g") {
+			return "arm64"
+		}
+		return "x64"
+	}
 	for _, f := range armFamilies {
 		if strings.HasPrefix(mt, f) {
 			return "arm64"
 		}
 	}
 	return "x64"
+}
+
+// vmPrefix is the provider's VM-name prefix setting.
+func (b BurstConfig) vmPrefix() string {
+	if b.Provider == BurstProviderAWS {
+		return b.AWS.VMPrefix
+	}
+	return b.GCE.VMPrefix
+}
+
+func loadAWSConfig() AWSConfig {
+	a := AWSConfig{
+		Region:           getEnv("BURST_AWS_REGION", getEnv("AWS_REGION", getEnv("AWS_DEFAULT_REGION", ""))),
+		SubnetIDs:        getEnvList("BURST_AWS_SUBNET_IDS", nil),
+		SecurityGroupIDs: getEnvList("BURST_AWS_SECURITY_GROUP_IDS", nil),
+		InstanceProfile:  strings.TrimSpace(getEnv("BURST_AWS_INSTANCE_PROFILE", "")),
+		InstanceRole:     strings.TrimSpace(getEnv("BURST_AWS_INSTANCE_ROLE", "")),
+		Spot:             getEnvBool("BURST_AWS_SPOT", true),
+		VMPrefix:         getEnv("BURST_AWS_VM_PREFIX", "gha-burst"),
+	}
+	if a.InstanceRole == "" && a.InstanceProfile != "" {
+		a.InstanceRole = a.InstanceProfile[strings.LastIndex(a.InstanceProfile, "/")+1:]
+	}
+	if v := strings.TrimSpace(getEnv("BURST_AWS_ASSOCIATE_PUBLIC_IP", "")); v != "" {
+		if on, err := strconv.ParseBool(v); err == nil {
+			a.AssociatePublicIP = &on
+		} else {
+			a.publicIPRaw = v
+		}
+	}
+	return a
 }
 
 func loadBurstConfig() BurstConfig {
@@ -156,6 +231,11 @@ func loadBurstConfig() BurstConfig {
 			ExternalIP:       getEnvBool("BURST_GCE_EXTERNAL_IP", true),
 			VMPrefix:         getEnv("BURST_GCE_VM_PREFIX", "gha-burst"),
 		},
+		AWS: loadAWSConfig(),
+	}
+	defMachine, defX64, defARM := defaultMachineTypeGCE, defaultImageX64, defaultImageARM64
+	if b.Provider == BurstProviderAWS {
+		defMachine, defX64, defARM = defaultMachineTypeAWS, defaultAWSImageX64, defaultAWSImageARM64
 	}
 	if b.PublicURL != "" {
 		if u, err := url.Parse(b.PublicURL); err == nil && (u.Path == "" || u.Path == "/") {
@@ -168,22 +248,22 @@ func loadBurstConfig() BurstConfig {
 		env := "BURST_POOL_" + strings.ToUpper(name) + "_"
 		p := BurstPool{
 			Name:        name,
-			MachineType: getEnv(env+"MACHINE_TYPE", "e2-standard-4"),
+			MachineType: getEnv(env+"MACHINE_TYPE", defMachine),
 			Image:       getEnv(env+"IMAGE", ""),
 			Arch:        strings.ToLower(getEnv(env+"ARCH", "")),
 			Labels:      getEnvList(env+"LABELS", nil),
 			MaxVMs:      getEnvInt(env+"MAX_VMS", 0),
 			DiskGB:      getEnvInt(env+"DISK_GB", 50),
-			Prefix:      fmt.Sprintf("%s-%s-", b.GCE.VMPrefix, name),
+			Prefix:      fmt.Sprintf("%s-%s-", b.vmPrefix(), name),
 			RunnerEnv:   splitEnvPairs(getEnv(env+"RUNNER_ENV", "")),
 		}
 		if p.Arch == "" {
-			p.Arch = archForMachineType(p.MachineType)
+			p.Arch = archForMachineType(b.Provider, p.MachineType)
 		}
 		if p.Image == "" {
-			p.Image = defaultImageX64
+			p.Image = defX64
 			if p.Arch == "arm64" {
-				p.Image = defaultImageARM64
+				p.Image = defARM
 			}
 		}
 		if p.MaxVMs <= 0 {
@@ -199,14 +279,20 @@ func (b BurstConfig) Validate() error {
 	if !b.Enabled() {
 		return nil
 	}
-	if b.Provider != BurstProviderGCE {
-		return fmt.Errorf("BURST_PROVIDER %q is not supported (use %q)", b.Provider, BurstProviderGCE)
-	}
-	if b.GCE.Project == "" || b.GCE.Zone == "" {
-		return fmt.Errorf("BURST_GCE_PROJECT and BURST_GCE_ZONE are required")
-	}
-	if !vmPrefixRE.MatchString(b.GCE.VMPrefix) {
-		return fmt.Errorf("BURST_GCE_VM_PREFIX %q must be lowercase letters, digits and dashes", b.GCE.VMPrefix)
+	switch b.Provider {
+	case BurstProviderGCE:
+		if b.GCE.Project == "" || b.GCE.Zone == "" {
+			return fmt.Errorf("BURST_GCE_PROJECT and BURST_GCE_ZONE are required")
+		}
+		if !vmPrefixRE.MatchString(b.GCE.VMPrefix) {
+			return fmt.Errorf("BURST_GCE_VM_PREFIX %q must be lowercase letters, digits and dashes", b.GCE.VMPrefix)
+		}
+	case BurstProviderAWS:
+		if err := b.AWS.validate(); err != nil {
+			return err
+		}
+	default:
+		return fmt.Errorf("BURST_PROVIDER %q is not supported (use %q or %q)", b.Provider, BurstProviderGCE, BurstProviderAWS)
 	}
 	u, err := url.Parse(b.PublicURL)
 	if b.PublicURL == "" || err != nil || u.Scheme != "https" || u.Host == "" {
@@ -245,6 +331,14 @@ func (b BurstConfig) Validate() error {
 		if p.MachineType == "" || p.Image == "" {
 			return fmt.Errorf("burst pool %s needs a machine type and an image", p.Name)
 		}
+		if b.Provider == BurstProviderAWS {
+			if !ec2TypeRE.MatchString(p.MachineType) {
+				return fmt.Errorf("burst pool %s: %q is not an EC2 instance type (e.g. m7i.xlarge)", p.Name, p.MachineType)
+			}
+			if !awsImageRE.MatchString(p.Image) {
+				return fmt.Errorf("burst pool %s: image must be an AMI ID (ami-...) or an SSM parameter path (/...), got %q", p.Name, p.Image)
+			}
+		}
 		if p.Arch != "x64" && p.Arch != "arm64" {
 			return fmt.Errorf("burst pool %s: arch must be x64 or arm64, got %q", p.Name, p.Arch)
 		}
@@ -254,6 +348,48 @@ func (b BurstConfig) Validate() error {
 		if err := validateRunnerEnv(p.RunnerEnv); err != nil {
 			return fmt.Errorf("BURST_POOL_%s_RUNNER_ENV: %w", strings.ToUpper(p.Name), err)
 		}
+	}
+	return nil
+}
+
+var (
+	awsRegionRE   = regexp.MustCompile(`^[a-z]{2}(-[a-z]+)+-[0-9]+$`)
+	awsSubnetRE   = regexp.MustCompile(`^subnet-[0-9a-f]{8,17}$`)
+	awsSGRE       = regexp.MustCompile(`^sg-[0-9a-f]{8,17}$`)
+	awsProfileRE  = regexp.MustCompile(`^([A-Za-z0-9+=,.@_-]{1,128}|arn:aws[a-z-]*:iam::[0-9]{12}:instance-profile/([A-Za-z0-9+=,.@_/-]+/)?[A-Za-z0-9+=,.@_-]{1,128})$`)
+	awsRoleNameRE = regexp.MustCompile(`^[A-Za-z0-9+=,.@_-]{1,64}$`)
+	ec2TypeRE     = regexp.MustCompile(`^[a-z][a-z0-9-]*\.[a-z0-9-]+$`)
+	awsImageRE    = regexp.MustCompile(`^(ami-[0-9a-f]{8,17}|(resolve:ssm:)?/[A-Za-z0-9_./-]+)$`)
+)
+
+func (a AWSConfig) validate() error {
+	if !awsRegionRE.MatchString(a.Region) {
+		return fmt.Errorf("BURST_AWS_REGION (or AWS_REGION) must be a region such as us-east-1, got %q", a.Region)
+	}
+	if len(a.SubnetIDs) == 0 {
+		return fmt.Errorf("BURST_AWS_SUBNET_IDS is required (comma-separated subnet IDs)")
+	}
+	for _, s := range a.SubnetIDs {
+		if !awsSubnetRE.MatchString(s) {
+			return fmt.Errorf("BURST_AWS_SUBNET_IDS: %q is not a subnet ID", s)
+		}
+	}
+	for _, s := range a.SecurityGroupIDs {
+		if !awsSGRE.MatchString(s) {
+			return fmt.Errorf("BURST_AWS_SECURITY_GROUP_IDS: %q is not a security group ID", s)
+		}
+	}
+	if !awsProfileRE.MatchString(a.InstanceProfile) {
+		return fmt.Errorf("BURST_AWS_INSTANCE_PROFILE must be an instance profile name or ARN, got %q", a.InstanceProfile)
+	}
+	if !awsRoleNameRE.MatchString(a.InstanceRole) {
+		return fmt.Errorf("BURST_AWS_INSTANCE_ROLE %q must be a role name (not an ARN)", a.InstanceRole)
+	}
+	if a.publicIPRaw != "" {
+		return fmt.Errorf("BURST_AWS_ASSOCIATE_PUBLIC_IP %q must be true or false (or unset for the subnet default)", a.publicIPRaw)
+	}
+	if !vmPrefixRE.MatchString(a.VMPrefix) {
+		return fmt.Errorf("BURST_AWS_VM_PREFIX %q must be lowercase letters, digits and dashes", a.VMPrefix)
 	}
 	return nil
 }

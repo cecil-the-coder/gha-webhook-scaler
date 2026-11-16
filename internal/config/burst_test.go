@@ -70,7 +70,7 @@ func TestBurstConfig_DefaultsAndPools(t *testing.T) {
 
 func TestBurstConfig_Rejects(t *testing.T) {
 	cases := map[string]map[string]string{
-		"provider":     {"BURST_PROVIDER": "aws"},
+		"provider":     {"BURST_PROVIDER": "azure"},
 		"project":      {"BURST_GCE_PROJECT": ""},
 		"http url":     {"BURST_PUBLIC_URL": "http://scaler.example.com"},
 		"bad path":     {"BURST_PUBLIC_URL": "https://scaler.example.com/hook"},
@@ -107,5 +107,133 @@ func TestOwnerBurstDefaults(t *testing.T) {
 	}
 	if c.Owners["bob"].Burst || c.Owners["bob"].RunnerGroupID != 1 {
 		t.Errorf("bob = %+v", c.Owners["bob"])
+	}
+}
+
+func awsBurstEnv(t *testing.T, kv map[string]string) {
+	t.Helper()
+	base := map[string]string{
+		"BURST_PROVIDER":             "aws",
+		"BURST_AWS_REGION":           "us-east-1",
+		"BURST_AWS_SUBNET_IDS":       "subnet-0123456789abcdef0, subnet-0fedcba9876543210",
+		"BURST_AWS_INSTANCE_PROFILE": "gha-burst-runner",
+		"BURST_PUBLIC_URL":           "https://scaler.example.com",
+		"AWS_REGION":                 "",
+		"AWS_DEFAULT_REGION":         "",
+	}
+	for k, v := range kv {
+		base[k] = v
+	}
+	for k, v := range base {
+		t.Setenv(k, v)
+	}
+}
+
+func TestBurstConfig_AWSDefaults(t *testing.T) {
+	awsBurstEnv(t, map[string]string{
+		"BURST_POOLS":                 "x64,arm",
+		"BURST_POOL_ARM_MACHINE_TYPE": "c7g.2xlarge",
+		"BURST_AWS_VM_PREFIX":         "ci",
+	})
+	b := loadBurstConfig()
+	if err := b.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	a := b.AWS
+	if len(a.SubnetIDs) != 2 || a.SubnetIDs[1] != "subnet-0fedcba9876543210" || !a.Spot || a.AssociatePublicIP != nil {
+		t.Errorf("aws = %+v", a)
+	}
+	if a.InstanceRole != "gha-burst-runner" {
+		t.Errorf("role defaults to the profile name, got %q", a.InstanceRole)
+	}
+	x64, arm := b.Pools[0], b.Pools[1]
+	if x64.MachineType != "m7i.xlarge" || x64.Arch != "x64" || x64.Image != defaultAWSImageX64 || x64.Prefix != "ci-x64-" {
+		t.Errorf("x64 pool = %+v", x64)
+	}
+	if arm.Arch != "arm64" || arm.Image != defaultAWSImageARM64 || arm.Prefix != "ci-arm-" {
+		t.Errorf("arm pool = %+v", arm)
+	}
+}
+
+func TestBurstConfig_AWSOptions(t *testing.T) {
+	awsBurstEnv(t, map[string]string{
+		"BURST_AWS_REGION":              "",
+		"AWS_REGION":                    "eu-west-1",
+		"BURST_AWS_INSTANCE_PROFILE":    "arn:aws:iam::123456789012:instance-profile/ci/gha-burst-profile",
+		"BURST_AWS_SECURITY_GROUP_IDS":  "sg-0123456789abcdef0",
+		"BURST_AWS_ASSOCIATE_PUBLIC_IP": "false",
+		"BURST_AWS_SPOT":                "false",
+		"BURST_POOL_X64_IMAGE":          "ami-0123456789abcdef0",
+	})
+	b := loadBurstConfig()
+	if err := b.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	a := b.AWS
+	if a.Region != "eu-west-1" || a.Spot || a.AssociatePublicIP == nil || *a.AssociatePublicIP {
+		t.Errorf("aws = %+v", a)
+	}
+	if a.InstanceRole != "gha-burst-profile" {
+		t.Errorf("role from profile ARN = %q", a.InstanceRole)
+	}
+	if b.Pools[0].Image != "ami-0123456789abcdef0" {
+		t.Errorf("image = %s", b.Pools[0].Image)
+	}
+}
+
+func TestBurstConfig_AWSRejects(t *testing.T) {
+	cases := map[string]map[string]string{
+		"no region":      {"BURST_AWS_REGION": ""},
+		"no subnets":     {"BURST_AWS_SUBNET_IDS": ""},
+		"bad subnet":     {"BURST_AWS_SUBNET_IDS": "vpc-0123456789abcdef0"},
+		"bad sg":         {"BURST_AWS_SECURITY_GROUP_IDS": "default"},
+		"no profile":     {"BURST_AWS_INSTANCE_PROFILE": ""},
+		"role arn":       {"BURST_AWS_INSTANCE_ROLE": "arn:aws:iam::123456789012:role/x"},
+		"bad public ip":  {"BURST_AWS_ASSOCIATE_PUBLIC_IP": "maybe"},
+		"bad prefix":     {"BURST_AWS_VM_PREFIX": "CI"},
+		"gce type":       {"BURST_POOL_X64_MACHINE_TYPE": "e2-standard-4"},
+		"gce image":      {"BURST_POOL_X64_IMAGE": "projects/ubuntu-os-cloud/global/images/family/x"},
+		"shared checks":  {"BURST_PUBLIC_URL": "http://scaler.example.com"},
+		"secret env aws": {"BURST_POOL_X64_RUNNER_ENV": "AWS_SECRET_ACCESS_KEY=x"},
+	}
+	for name, kv := range cases {
+		t.Run(name, func(t *testing.T) {
+			awsBurstEnv(t, kv)
+			if err := loadBurstConfig().Validate(); err == nil {
+				t.Errorf("want validation error for %v", kv)
+			}
+		})
+	}
+}
+
+func TestArchForMachineType(t *testing.T) {
+	cases := []struct{ provider, mt, want string }{
+		{BurstProviderGCE, "t2a-standard-4", "arm64"},
+		{BurstProviderGCE, "c4a-highcpu-8", "arm64"},
+		{BurstProviderGCE, "n4a-standard-2", "arm64"},
+		{BurstProviderGCE, "e2-standard-4", "x64"},
+		{BurstProviderGCE, "t4g.large", "x64"}, // GCE rules only
+		{BurstProviderAWS, "t4g.large", "arm64"},
+		{BurstProviderAWS, "m7g.xlarge", "arm64"},
+		{BurstProviderAWS, "c7g.2xlarge", "arm64"},
+		{BurstProviderAWS, "c7gn.large", "arm64"},
+		{BurstProviderAWS, "r8g.large", "arm64"},
+		{BurstProviderAWS, "m6gd.large", "arm64"},
+		{BurstProviderAWS, "im4gn.large", "arm64"},
+		{BurstProviderAWS, "is4gen.large", "arm64"},
+		{BurstProviderAWS, "g5g.xlarge", "arm64"},
+		{BurstProviderAWS, "a1.large", "arm64"},
+		{BurstProviderAWS, "m7i.xlarge", "x64"},
+		{BurstProviderAWS, "m7i-flex.large", "x64"},
+		{BurstProviderAWS, "c6a.large", "x64"},
+		{BurstProviderAWS, "g4dn.xlarge", "x64"},
+		{BurstProviderAWS, "g5.xlarge", "x64"},
+		{BurstProviderAWS, "t3.medium", "x64"},
+		{BurstProviderAWS, "t2a-standard-4", "x64"}, // EC2 rules only
+	}
+	for _, c := range cases {
+		if got := archForMachineType(c.provider, c.mt); got != c.want {
+			t.Errorf("%s %s: arch %s, want %s", c.provider, c.mt, got, c.want)
+		}
 	}
 }

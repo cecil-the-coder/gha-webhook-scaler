@@ -162,6 +162,231 @@ gcloud compute instances get-serial-port-output gha-burst-x64-0a1b2c3d --zone us
 The scaler logs one structured line per decision (`decision`, `create`, `delete`,
 `runner_config`, `create_backoff`, ...), and `/metrics` has a `burst` section.
 
+## AWS
+
+`BURST_PROVIDER=aws` runs burst VMs on Amazon EC2. Everything outside this section
+(job selection, pools, caps, reaping, the one-config-per-VM rule) works the same as for
+any provider.
+
+### What a VM looks like
+
+- One-time **spot** instance (`BURST_AWS_SPOT=false` for on-demand), interruption
+  behaviour `terminate`.
+- `InstanceInitiatedShutdownBehavior=terminate`: when the runner exits, the bootstrap
+  powers off and the instance is gone. The scaler also terminates VMs by the usual rules.
+- **IMDSv2 required**, hop limit 1 (containers on a Docker bridge network can't get an
+  IMDS session token).
+- Tags: `Name=<vm name>`, `managed-by=gha-webhook-scaler`, `gha-scaler-pool=<pool>`, on
+  the instance and its volume. The scaler only lists and terminates instances with the
+  `managed-by` tag.
+- The VM name is the `RunInstances` client token, so a retried create never starts a
+  second instance.
+- User-data is the gzipped bootstrap script plus **public** settings only: the config
+  URL, runner version, Docker switch and the pool's runner env. No GitHub token, AWS key
+  or JIT config is ever put in user-data or tags.
+- Subnets in `BURST_AWS_SUBNET_IDS` are used in turn. A capacity error that is specific to
+  one Availability Zone (`InsufficientInstanceCapacity`, `SpotMaxPriceTooLow`, ...) moves
+  on to the next subnet. Account-wide limits (`VcpuLimitExceeded`,
+  `MaxSpotInstanceCountExceeded`, `InstanceLimitExceeded`) and capacity errors in every
+  subnet pause creates in every pool for 2 minutes.
+
+### How a VM proves who it is
+
+EC2 has no audience-bound identity token like GCE's, so the VM uses the pattern of
+Vault's AWS IAM auth method:
+
+1. The bootstrap gets an IMDSv2 session token (`PUT /latest/api/token`), then the
+   temporary credentials of its instance role.
+2. With them it **signs, but does not send**, an `sts:GetCallerIdentity` request to
+   `https://sts.<region>.amazonaws.com/` (SigV4 in Python's standard library; no AWS
+   CLI). The signed headers include `X-Gha-Scaler-Audience: <BURST_PUBLIC_URL>`.
+3. It sends the signed request (method, URL, headers, body, as base64 JSON) once, as the
+   bearer token of `POST /v1/runner-config`. The credentials never touch disk or argv.
+
+The scaler then:
+
+- accepts only `POST` to exactly `sts.amazonaws.com` or `sts.<BURST_AWS_REGION>.amazonaws.com`
+  over https, with no port, path, query or redirect (so the token can't point the scaler
+  anywhere else), and a body of exactly `Action=GetCallerIdentity&Version=2011-06-15`;
+- requires `host`, `x-amz-date` and `x-gha-scaler-audience` among the signed headers, the
+  audience equal to `BURST_PUBLIC_URL`, and a signing time within the last 5 minutes;
+- sends the request to STS, which checks the signature and answers with the caller's
+  ARN. It must be `arn:aws:sts::<account>:assumed-role/<BURST_AWS_INSTANCE_ROLE>/<instance-id>`,
+  the session EC2 opens for an instance profile;
+- looks the instance up: same account, `managed-by=gha-webhook-scaler`, pending or
+  running, carrying `BURST_AWS_INSTANCE_PROFILE`. Its `Name` tag is the VM's identity.
+
+Rejections are logged with the failed check only, never the token.
+
+**Threat notes.**
+
+- The proof is only as strong as the instance role's **trust policy**. It must trust
+  `ec2.amazonaws.com` and nothing else. If a user or another role could
+  `sts:AssumeRole` into it with a session name like `i-0123...`, they could pose as that
+  instance.
+- Any process on the VM, including the job, can reach IMDS and sign such a request. That
+  gains nothing: the VM's one config is issued before the job starts, and a second request
+  gets 409.
+- A captured token can be replayed for up to 5 minutes, but only to this scaler (the
+  audience is signed) and only for the VM that signed it, which already has its config.
+  Use TLS end to end. Other services that accept presigned `GetCallerIdentity` requests
+  (for example Vault with a required server-ID header) won't accept a token signed for
+  this audience, and vice versa.
+- The instance role has **no permissions**, so leaked instance credentials only allow
+  signing more identity proofs for that same VM.
+
+### One-time AWS setup
+
+Replace `123456789012` with your account ID.
+
+**1. The instance role and profile the VMs run as.** It needs no permission policies.
+
+```sh
+cat > trust.json <<'EOF'
+{
+  "Version": "2012-10-17",
+  "Statement": [{
+    "Effect": "Allow",
+    "Principal": { "Service": "ec2.amazonaws.com" },
+    "Action": "sts:AssumeRole"
+  }]
+}
+EOF
+aws iam create-role --role-name gha-burst-runner --assume-role-policy-document file://trust.json
+aws iam create-instance-profile --instance-profile-name gha-burst-runner
+aws iam add-role-to-instance-profile --instance-profile-name gha-burst-runner --role-name gha-burst-runner
+```
+
+**2. The scaler's own permissions.** Attach this policy to whatever identity the scaler
+runs as (an IAM role via IRSA/EKS Pod Identity, an ECS task role, an EC2 instance role,
+or keys in the environment; the SDK's default credential chain finds it):
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "Launch",
+      "Effect": "Allow",
+      "Action": "ec2:RunInstances",
+      "Resource": "*"
+    },
+    {
+      "Sid": "TagOnLaunchOnly",
+      "Effect": "Allow",
+      "Action": "ec2:CreateTags",
+      "Resource": [
+        "arn:aws:ec2:*:123456789012:instance/*",
+        "arn:aws:ec2:*:123456789012:volume/*"
+      ],
+      "Condition": { "StringEquals": { "ec2:CreateAction": "RunInstances" } }
+    },
+    {
+      "Sid": "TerminateOwnVMs",
+      "Effect": "Allow",
+      "Action": "ec2:TerminateInstances",
+      "Resource": "arn:aws:ec2:*:123456789012:instance/*",
+      "Condition": { "StringEquals": { "aws:ResourceTag/managed-by": "gha-webhook-scaler" } }
+    },
+    {
+      "Sid": "Read",
+      "Effect": "Allow",
+      "Action": ["ec2:DescribeInstances", "ec2:DescribeImages"],
+      "Resource": "*"
+    },
+    {
+      "Sid": "PassRunnerRole",
+      "Effect": "Allow",
+      "Action": "iam:PassRole",
+      "Resource": "arn:aws:iam::123456789012:role/gha-burst-runner",
+      "Condition": { "StringEquals": { "iam:PassedToService": "ec2.amazonaws.com" } }
+    },
+    {
+      "Sid": "ResolveUbuntuAMI",
+      "Effect": "Allow",
+      "Action": "ssm:GetParameter",
+      "Resource": "arn:aws:ssm:*::parameter/aws/service/canonical/*"
+    }
+  ]
+}
+```
+
+`ssm:GetParameter` is only needed when a pool's image is an SSM parameter path (the
+default). Verifying a VM needs no extra permission: the STS call carries the VM's
+signature, not the scaler's. If EBS default encryption uses a customer-managed KMS key,
+the scaler also needs the usual EBS key permissions on it (`kms:CreateGrant`,
+`kms:GenerateDataKeyWithoutPlaintext`, `kms:Decrypt`, `kms:DescribeKey`).
+You can narrow `ec2:RunInstances` to your subnets, security groups, AMIs and instance
+types with resource ARNs if you want.
+
+**3. Spot.** An account that has never launched spot instances needs the spot
+service-linked role once: `aws iam create-service-linked-role --aws-service-name spot.amazonaws.com`.
+Check the "All Standard Spot Instance Requests" vCPU quota as well; it is often small on
+new accounts. Set `BURST_MAX_VMS_TOTAL` to what it allows.
+
+**4. Network.** VMs need outbound HTTPS to `BURST_PUBLIC_URL`, to GitHub
+(`github.com`, `api.github.com`, `*.actions.githubusercontent.com`, release downloads)
+and, on stock images, to the Ubuntu archive. Use a public subnet with
+`BURST_AWS_ASSOCIATE_PUBLIC_IP=true` or a private subnet with a NAT gateway. VMs don't
+need inbound access, so a security group with no inbound rules is fine. They don't call
+STS; the **scaler** must be able to reach `sts.<region>.amazonaws.com`.
+
+### Example
+
+```sh
+BURST_PROVIDER=aws
+BURST_PUBLIC_URL=https://scaler.example.com            # /v1/runner-config is appended
+BURST_AWS_REGION=us-east-1
+BURST_AWS_SUBNET_IDS=subnet-0123456789abcdef0,subnet-0fedcba9876543210
+BURST_AWS_SECURITY_GROUP_IDS=sg-0123456789abcdef0
+BURST_AWS_INSTANCE_PROFILE=gha-burst-runner
+BURST_POOLS=x64,arm
+BURST_POOL_X64_MACHINE_TYPE=m7i.xlarge
+BURST_POOL_ARM_MACHINE_TYPE=c7g.xlarge                 # Graviton: arch detected from the "g"
+BURST_MAX_VMS_TOTAL=3
+```
+
+### AWS settings
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `BURST_AWS_REGION` | `AWS_REGION`, then `AWS_DEFAULT_REGION` | Region VMs run in; also the regional STS host accepted in identity proofs |
+| `BURST_AWS_SUBNET_IDS` | (required) | Comma-separated subnet IDs, tried in turn |
+| `BURST_AWS_SECURITY_GROUP_IDS` | VPC default group | Comma-separated security group IDs |
+| `BURST_AWS_INSTANCE_PROFILE` | (required) | Instance profile name or ARN the VMs run as |
+| `BURST_AWS_INSTANCE_ROLE` | the profile's name | Role name inside the profile, as it appears in the VM's assumed-role ARN. Set it when the role and profile names differ. |
+| `BURST_AWS_SPOT` | `true` | One-time spot instances |
+| `BURST_AWS_ASSOCIATE_PUBLIC_IP` | subnet default | `true`/`false` to force a public IPv4 address on or off |
+| `BURST_AWS_VM_PREFIX` | `gha-burst` | VM names are `<prefix>-<pool>-<8 hex>`. Use a different prefix per scaler sharing an account and region. |
+
+Pool settings mean the same as for other providers, with these differences:
+
+- `BURST_POOL_<X>_MACHINE_TYPE` is an EC2 instance type; the default is `m7i.xlarge`.
+  The architecture is `arm64` for Graviton types (a `g` after the generation number:
+  `t4g`, `m7g`, `c7gn`, `r8g`, ...; also `a1`), else `x64`.
+- `BURST_POOL_<X>_IMAGE` is an AMI ID (`ami-...`) or an SSM parameter path (`/...`,
+  optionally `resolve:ssm:/...`). The default is Canonical's Ubuntu 24.04 parameter for
+  the pool's architecture,
+  `/aws/service/canonical/ubuntu/server/24.04/stable/current/<amd64|arm64>/hvm/ebs-gp3/ami-id`,
+  re-read at most hourly. A baked AMI needs what a baked GCE image needs (runner in
+  `/opt/actions-runner`, a `runner` user, `python3`, `curl`, `setpriv`) plus cloud-init.
+- `BURST_POOL_<X>_DISK_GB` sizes the root gp3 volume, which is deleted with the instance.
+
+### Debugging an EC2 VM
+
+The bootstrap logs steps and HTTP status codes (never credentials, tokens or configs) to
+the console:
+
+```sh
+aws ec2 get-console-output --instance-id i-0123456789abcdef0 --latest --output text
+aws ec2 describe-instances --filters Name=tag:managed-by,Values=gha-webhook-scaler \
+  --query 'Reservations[].Instances[].[Tags[?Key==`Name`]|[0].Value,InstanceId,State.Name]'
+```
+
+A `runner_config` line with `identity_rejected` has an `identity_rejected_reason` line
+before it naming the failed check (for example `caller role` when
+`BURST_AWS_INSTANCE_ROLE` doesn't match the profile's role).
+
 ## Configuration reference
 
 | Variable | Default | Meaning |
