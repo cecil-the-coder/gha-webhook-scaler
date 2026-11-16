@@ -7,6 +7,7 @@ import (
 	"log/slog"
 
 	"github.com/cecil-the-coder/gha-webhook-scaler/internal/burst"
+	awsburst "github.com/cecil-the-coder/gha-webhook-scaler/internal/burst/aws"
 	"github.com/cecil-the-coder/gha-webhook-scaler/internal/burst/gce"
 	"github.com/cecil-the-coder/gha-webhook-scaler/internal/config"
 	"github.com/cecil-the-coder/gha-webhook-scaler/internal/github"
@@ -30,6 +31,16 @@ func newBurstController(ctx context.Context, cfg *config.Config, clients map[str
 		}
 		prov = p
 		verify = gce.NewVerifier(cfg.Burst.PublicURL, cfg.Burst.GCE.Project, cfg.Burst.GCE.Zone)
+	case config.BurstProviderAWS:
+		p, err := awsburst.New(ctx, cfg.Burst)
+		if err != nil {
+			return nil, err
+		}
+		v, err := awsburst.NewVerifier(ctx, cfg.Burst)
+		if err != nil {
+			return nil, err
+		}
+		prov, verify = p, v
 	default:
 		return nil, fmt.Errorf("burst provider %q is not supported", cfg.Burst.Provider)
 	}

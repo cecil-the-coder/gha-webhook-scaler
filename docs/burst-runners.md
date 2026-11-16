@@ -406,7 +406,7 @@ before it naming the failed check (for example `caller role` when
 | `BURST_RUNNER_VERSION` | `latest` | Runner installed on stock images |
 | `BURST_INSTALL_DOCKER` | `true` | Install Docker on stock images that lack it |
 | `BURST_POOLS` | `x64` | Pool names (lowercase letters/digits) |
-| `BURST_POOL_<X>_MACHINE_TYPE` | `e2-standard-4` | Machine/instance type |
+| `BURST_POOL_<X>_MACHINE_TYPE` | `e2-standard-4` (GCE), `m7i.xlarge` (AWS) | Machine/instance type |
 | `BURST_POOL_<X>_IMAGE` | Ubuntu 24.04 for the arch | Boot image |
 | `BURST_POOL_<X>_ARCH` | from machine type | `x64` or `arm64` |
 | `BURST_POOL_<X>_LABELS` | | Extra runner labels, comma-separated |
