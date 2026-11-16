@@ -84,6 +84,7 @@ type GCEConfig struct {
 	Subnetwork       string
 	VMServiceAccount string // empty = the project's default compute SA
 	Spot             bool
+	ExternalIP       bool // give VMs an ephemeral public IP (needed for egress without Cloud NAT)
 	VMPrefix         string
 }
 
@@ -152,6 +153,7 @@ func loadBurstConfig() BurstConfig {
 			Subnetwork:       getEnv("BURST_GCE_SUBNETWORK", ""),
 			VMServiceAccount: getEnv("BURST_GCE_VM_SERVICE_ACCOUNT", ""),
 			Spot:             getEnvBool("BURST_GCE_SPOT", true),
+			ExternalIP:       getEnvBool("BURST_GCE_EXTERNAL_IP", true),
 			VMPrefix:         getEnv("BURST_GCE_VM_PREFIX", "gha-burst"),
 		},
 	}
