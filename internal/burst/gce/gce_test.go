@@ -115,6 +115,16 @@ func TestCreate_RequestShape(t *testing.T) {
 	}
 }
 
+func TestCreate_DiskZeroUsesImageSize(t *testing.T) {
+	api := &fakeAPI{op: fakeOp{pb: &computepb.Operation{}}}
+	p := pool
+	p.DiskGB = 0
+	testProvider(api).Create(context.Background(), p, "n")
+	if api.insertReq.GetInstanceResource().GetDisks()[0].GetInitializeParams().DiskSizeGb != nil {
+		t.Error("DiskGB 0 must leave the size to the image")
+	}
+}
+
 func TestCreate_NoRunnerEnvNoItem(t *testing.T) {
 	api := &fakeAPI{op: fakeOp{pb: &computepb.Operation{}}}
 	p := pool

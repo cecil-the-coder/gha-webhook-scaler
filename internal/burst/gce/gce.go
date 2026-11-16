@@ -172,10 +172,7 @@ func (p *Provider) instance(pool config.BurstPool, name string) *computepb.Insta
 		MachineType: proto.String(fmt.Sprintf("zones/%s/machineTypes/%s", g.Zone, pool.MachineType)),
 		Disks: []*computepb.AttachedDisk{{
 			Boot: proto.Bool(true), AutoDelete: proto.Bool(true),
-			InitializeParams: &computepb.AttachedDiskInitializeParams{
-				SourceImage: proto.String(qualify(pool.Image, "global/images/")),
-				DiskSizeGb:  proto.Int64(int64(pool.DiskGB)),
-			},
+			InitializeParams: diskParams(pool),
 		}},
 		NetworkInterfaces: []*computepb.NetworkInterface{nic},
 		ServiceAccounts: []*computepb.ServiceAccount{{
@@ -237,6 +234,14 @@ func (p *Provider) List(ctx context.Context) ([]burst.Instance, error) {
 		})
 	}
 	return out, nil
+}
+
+func diskParams(pool config.BurstPool) *computepb.AttachedDiskInitializeParams {
+	d := &computepb.AttachedDiskInitializeParams{SourceImage: proto.String(qualify(pool.Image, "global/images/"))}
+	if pool.DiskGB > 0 {
+		d.DiskSizeGb = proto.Int64(int64(pool.DiskGB))
+	}
+	return d
 }
 
 // qualify returns v as-is when it is already a path or URL, else prefix+v.

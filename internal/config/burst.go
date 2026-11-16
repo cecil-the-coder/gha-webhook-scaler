@@ -73,7 +73,7 @@ type BurstPool struct {
 	Arch        string   // "x64" or "arm64"
 	Labels      []string // extra runner labels, beyond self-hosted, Linux and the arch
 	MaxVMs      int
-	DiskGB      int
+	DiskGB      int    // 0 = the image's own size
 	Prefix      string // VM-name prefix, ends with "-"; names are <Prefix><8 hex>
 
 	// RunnerEnv is non-secret job environment written to the runner's .env.
@@ -349,8 +349,8 @@ func (b BurstConfig) Validate() error {
 		if p.Arch != "x64" && p.Arch != "arm64" {
 			return fmt.Errorf("burst pool %s: arch must be x64 or arm64, got %q", p.Name, p.Arch)
 		}
-		if p.DiskGB < 10 {
-			return fmt.Errorf("burst pool %s: disk must be at least 10 GB", p.Name)
+		if p.DiskGB != 0 && p.DiskGB < 10 {
+			return fmt.Errorf("burst pool %s: disk must be at least 10 GB (or 0 for the image's size)", p.Name)
 		}
 		if !runnerDirRE.MatchString(p.RunnerDir) || strings.Contains(p.RunnerDir, "..") {
 			return fmt.Errorf("BURST_POOL_%s_RUNNER_DIR %q must be an absolute path", strings.ToUpper(p.Name), p.RunnerDir)
