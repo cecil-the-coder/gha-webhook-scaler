@@ -46,9 +46,21 @@ services:
       
       # Job scanning configuration (0 to disable, value in seconds)
       - JOB_SCAN_INTERVAL_SECONDS=${JOB_SCAN_INTERVAL_SECONDS:-300}
+
+      # Burst runners on cloud VMs (off unless BURST_PROVIDER is set; see docs/burst-runners.md)
+      - BURST_PROVIDER=${BURST_PROVIDER:-}
+      - BURST_PUBLIC_URL=${BURST_PUBLIC_URL:-}
+      - BURST_GCE_PROJECT=${BURST_GCE_PROJECT:-}
+      - BURST_GCE_ZONE=${BURST_GCE_ZONE:-}
+      - BURST_GCE_VM_SERVICE_ACCOUNT=${BURST_GCE_VM_SERVICE_ACCOUNT:-}
+      - BURST_POOLS=${BURST_POOLS:-x64}
+      - BURST_MAX_VMS_TOTAL=${BURST_MAX_VMS_TOTAL:-3}
+      - BURST_STATE_DIR=/var/lib/gha-webhook-scaler/burst
+      - GOOGLE_APPLICATION_CREDENTIALS=${GOOGLE_APPLICATION_CREDENTIALS:-}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - ./logs:/app/logs
+      - burst-state:/var/lib/gha-webhook-scaler/burst
     networks:
       - github-runners
     healthcheck:
@@ -83,4 +95,6 @@ volumes:
   buildkit-cache-arm64:
     driver: local
   registry-cache:
+    driver: local
+  burst-state:
     driver: local 
