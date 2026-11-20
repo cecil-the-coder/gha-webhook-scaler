@@ -772,9 +772,13 @@ jobs:
 		},
 	})
 	config := &config.Config{
-		Owners: map[string]*config.OwnerConfig{"test-owner": {Owner: "test-owner", GitHubToken: "test-token", AllRepos: true}},
-		RepoOwner:   "testowner",
-		RepoName:    "testrepo",
+		Owners: map[string]*config.OwnerConfig{
+			"testowner": {
+				Owner:       "testowner",
+				GitHubToken: "test-token",
+				RepoName:    "testrepo",
+			},
+		},
 	}
 	githubClients := map[string]*github.Client{
 		"testowner": client,
@@ -1994,10 +1998,10 @@ func TestEndpoints_PreviewWebhookSetupHandler(t *testing.T) {
 		},
 	})
 	config := &config.Config{
-		Owners: map[string]*config.OwnerConfig{"test-owner": {Owner: "test-owner", GitHubToken: "test-token", AllRepos: true}},
 		Owners: map[string]*config.OwnerConfig{
 			"testowner": {
-				Owners: map[string]*config.OwnerConfig{"test-owner": {Owner: "test-owner", GitHubToken: "test-token", AllRepos: true}},
+				Owner:       "testowner",
+				GitHubToken: "test-token",
 				AllRepos:    true,
 			},
 		},
@@ -2139,7 +2143,8 @@ func TestEndpoints_PreviewWebhookSetupHandler_AllReposDisabled(t *testing.T) {
 	config := &config.Config{
 		Owners: map[string]*config.OwnerConfig{
 			"testowner": {
-				Owners: map[string]*config.OwnerConfig{"test-owner": {Owner: "test-owner", GitHubToken: "test-token", AllRepos: true}},
+				Owner:       "testowner",
+				GitHubToken: "test-token",
 				AllRepos:    false, // Disabled
 			},
 		},

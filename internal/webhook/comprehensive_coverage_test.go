@@ -179,7 +179,7 @@ func TestHandler_HandleWebhook_ComprehensiveScenarios(t *testing.T) {
 					"full_name": "test-owner/test-repo",
 				},
 			},
-			ownerOwners: map[string]*config.OwnerConfig{"test-owner": {Owner: "test-owner", GitHubToken: "test-token", WebhookSecret: "owner-secret"}},
+			ownerWebhookSecret: "owner-secret",
 			wantStatus:         http.StatusOK,
 			repoAllowed:        true,
 		},
@@ -188,12 +188,12 @@ func TestHandler_HandleWebhook_ComprehensiveScenarios(t *testing.T) {
 			eventType: "ping",
 			payload: map[string]interface{}{
 				"repository": map[string]interface{}{
-					"full_name": "unknown-owner/test-repo",
+					"full_name": "test-owner/test-repo",
 				},
 			},
 			webhookSecret: "global-secret",
 			wantStatus:    http.StatusOK,
-			repoAllowed:   false,
+			repoAllowed:   true,
 		},
 		{
 			name:      "invalid signature with owner secret",
@@ -203,9 +203,9 @@ func TestHandler_HandleWebhook_ComprehensiveScenarios(t *testing.T) {
 					"full_name": "test-owner/test-repo",
 				},
 			},
-			ownerOwners: map[string]*config.OwnerConfig{"test-owner": {Owner: "test-owner", GitHubToken: "test-token", WebhookSecret: "owner-secret"}},
+			ownerWebhookSecret: "owner-secret",
 			signature:          "sha256=invalid-signature",
-			wantStatus:         http.StatusOK, // TestHandler doesn't implement full signature verification
+			wantStatus:         http.StatusUnauthorized, // owner secret is verified
 			repoAllowed:        true,
 		},
 		{
@@ -213,27 +213,32 @@ func TestHandler_HandleWebhook_ComprehensiveScenarios(t *testing.T) {
 			eventType: "ping",
 			payload: map[string]interface{}{
 				"repository": map[string]interface{}{
-					"full_name": "unknown-owner/test-repo",
+					"full_name": "test-owner/test-repo",
 				},
 			},
 			webhookSecret: "global-secret",
 			signature:     "sha256=invalid-signature",
 			wantStatus:    http.StatusUnauthorized,
-			repoAllowed:   false,
+			repoAllowed:   true,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			// Setup config
+			// Setup config. There is no global secret at runtime any more: the
+			// global WEBHOOK_SECRET is a load-time fallback for each owner, so
+			// mirror that here (owner secret wins, else global).
+			ownerSecret := tt.ownerWebhookSecret
+			if ownerSecret == "" {
+				ownerSecret = tt.webhookSecret
+			}
 			cfg := &config.Config{
-				WebhookSecret: tt.webhookSecret,
 				Owners: map[string]*config.OwnerConfig{
 					"test-owner": {
 						Owner:         "test-owner",
 						GitHubToken:   "test-token",
 						AllRepos:      true,
-						WebhookSecret: tt.ownerWebhookSecret,
+						WebhookSecret: ownerSecret,
 					},
 				},
 			}
@@ -327,7 +332,9 @@ func TestHandler_HandleWebhook_ErrorScenarios(t *testing.T) {
 			name:       "missing repository in payload",
 			eventType:  "workflow_run",
 			payload:    `{"action":"queued"}`,
-			wantStatus: http.StatusUnauthorized, // TestHandler with webhook secret will fail due to missing repo for signature check
+			// No repository means no owner match, so no owner secret is checked;
+			// the event falls through and is reported as not configured.
+			wantStatus: http.StatusOK,
 		},
 	}
 
@@ -365,8 +372,9 @@ func TestHandler_processWebhookEvent_Comprehensive(t *testing.T) {
 	cfg := &config.Config{
 		Owners: map[string]*config.OwnerConfig{
 			"test-owner": {
-				Owner:    "test-owner",
-				Owners: map[string]*config.OwnerConfig{"test-owner": {Owner: "test-owner", GitHubToken: "test-token", AllRepos: true}},
+				Owner:       "test-owner",
+				GitHubToken: "test-token",
+				AllRepos:    true,
 			},
 		},
 	}
@@ -438,8 +446,9 @@ func TestHandler_handleWorkflowRun_Comprehensive(t *testing.T) {
 	cfg := &config.Config{
 		Owners: map[string]*config.OwnerConfig{
 			"test-owner": {
-				Owner:    "test-owner",
-				Owners: map[string]*config.OwnerConfig{"test-owner": {Owner: "test-owner", GitHubToken: "test-token", AllRepos: true}},
+				Owner:       "test-owner",
+				GitHubToken: "test-token",
+				AllRepos:    true,
 			},
 		},
 	}
@@ -698,7 +707,14 @@ func TestHandler_GetStatus_Comprehensive(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			cfg := &config.Config{
-				AllRepos: tt.allRepos,
+				Owners: map[string]*config.OwnerConfig{
+					"test-owner": {
+						Owner:       "test-owner",
+						GitHubToken: "test-token",
+						AllRepos:    tt.allRepos,
+						RepoName:    "test-repo",
+					},
+				},
 			}
 
 			enhancedMock := &EnhancedMockRunnerManager{

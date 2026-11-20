@@ -24,6 +24,18 @@ type Handler struct {
 	runnerManager        *runner.Manager
 	debouncer           *WebhookDebouncer
 	workflowMonitor     *WorkflowMonitor
+	burst               JobNoter // nil when burst runners are off
+}
+
+// JobNoter is told about queued jobs so burst runners can poll that repo.
+// The burst controller (internal/burst) implements it.
+type JobNoter interface {
+	NoteJob(repoFullName string)
+}
+
+// SetBurst wires the burst controller in.
+func (wh *Handler) SetBurst(b JobNoter) {
+	wh.burst = b
 }
 
 type WebhookDebouncer struct {
@@ -250,6 +262,10 @@ func (wh *Handler) handleWorkflowJobEvent(body []byte) {
 	switch payload.Action {
 	case "queued":
 		log.Printf("Job queued: %s (repo: %s) with labels %v - scaling up", payload.WorkflowJob.Name, payload.Repository.FullName, payload.WorkflowJob.Labels)
+		if wh.burst != nil {
+			// Burst reads the real queue itself; this only says "look at this repo".
+			wh.burst.NoteJob(payload.Repository.FullName)
+		}
 		if err := wh.runnerManager.HandleJobQueued(payload.Repository.FullName, repoName, payload.WorkflowJob.Labels); err != nil {
 			log.Printf("Failed to handle job queued: %v", err)
 			return

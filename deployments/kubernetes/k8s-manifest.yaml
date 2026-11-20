@@ -74,6 +74,41 @@ data:
   JOB_SCAN_INTERVAL_SECONDS: "300"
 
 ---
+# Optional: burst runners on Google Compute Engine (docs/burst-runners.md).
+# Burst needs ONE replica (remove the HPA below) and the burst-state PVC.
+# GCP credentials: use Workload Identity, or mount a key and set
+# GOOGLE_APPLICATION_CREDENTIALS.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: github-runner-burst-config
+  namespace: github-runners
+data: {}
+  # BURST_PROVIDER: "gce"
+  # BURST_PUBLIC_URL: "https://your-webhook-domain.com"   # /v1/runner-config is appended
+  # BURST_GCE_PROJECT: "your-gcp-project"
+  # BURST_GCE_ZONE: "us-central1-a"
+  # BURST_GCE_VM_SERVICE_ACCOUNT: "burst-runner-vm@your-gcp-project.iam.gserviceaccount.com"
+  # BURST_POOLS: "x64,arm"
+  # BURST_POOL_X64_MACHINE_TYPE: "e2-standard-4"
+  # BURST_POOL_ARM_MACHINE_TYPE: "t2a-standard-4"
+  # BURST_MAX_VMS_TOTAL: "3"
+  # BURST_STATE_DIR: "/var/lib/gha-webhook-scaler/burst"
+
+---
+# Optional: persistent state for burst runners (one-config-per-VM record, budget)
+# apiVersion: v1
+# kind: PersistentVolumeClaim
+# metadata:
+#   name: burst-state
+#   namespace: github-runners
+# spec:
+#   accessModes: ["ReadWriteOnce"]
+#   resources:
+#     requests:
+#       storage: 100Mi
+
+---
 apiVersion: v1
 kind: Secret
 metadata:
@@ -136,6 +171,12 @@ spec:
         - containerPort: 8080
           name: http
           protocol: TCP
+        # Burst runner settings (empty ConfigMap = burst off)
+        envFrom:
+        - configMapRef:
+            name: github-runner-burst-config
+            optional: true
+
         env:
         # ========================================================================
         # OWNER CONFIGURATION
@@ -320,6 +361,9 @@ spec:
           mountPath: /var/run/docker.sock
         - name: logs
           mountPath: /app/logs
+        # Burst runners: uncomment with the burst-state PVC above
+        # - name: burst-state
+        #   mountPath: /var/lib/gha-webhook-scaler/burst
       volumes:
       - name: docker-sock
         hostPath:
@@ -327,6 +371,9 @@ spec:
           type: Socket
       - name: logs
         emptyDir: {}
+      # - name: burst-state
+      #   persistentVolumeClaim:
+      #     claimName: burst-state
       restartPolicy: Always
 
 ---
@@ -422,14 +469,15 @@ spec:
             name: github-runner-service
             port:
               number: 8080
-  Uncomment and configure TLS if needed
-  tls:
-  - hosts:
-    - your-domain.com
-    secretName: github-runner-tls
+  # Uncomment and configure TLS if needed
+  # tls:
+  # - hosts:
+  #   - your-domain.com
+  #   secretName: github-runner-tls
 
 ---
 # Optional: HorizontalPodAutoscaler
+# Do NOT use with burst runners: more than one replica would create VMs twice.
 apiVersion: autoscaling/v2
 kind: HorizontalPodAutoscaler
 metadata:

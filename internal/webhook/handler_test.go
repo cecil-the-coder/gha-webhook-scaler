@@ -469,12 +469,12 @@ func TestHandler_HandleWebhook(t *testing.T) {
 			gin.SetMode(gin.TestMode)
 			
 			cfg := &config.Config{
-				WebhookSecret: "test-secret",
 				Owners: map[string]*config.OwnerConfig{
 					"test-owner": {
-						Owner:       "test-owner",
-						GitHubToken: "test-token",
-						AllRepos:    true,
+						Owner:         "test-owner",
+						GitHubToken:   "test-token",
+						AllRepos:      true,
+						WebhookSecret: "test-secret",
 					},
 				},
 			}
@@ -507,8 +507,9 @@ func TestHandler_HandleWebhook(t *testing.T) {
 			}
 
 			// Add signature if needed
-			if tt.secret != "" || cfg.WebhookSecret != "" {
-				secret := cfg.WebhookSecret
+			ownerSecret := cfg.Owners["test-owner"].WebhookSecret
+			if tt.secret != "" || ownerSecret != "" {
+				secret := ownerSecret
 				if tt.secret != "" {
 					secret = tt.secret
 				}
@@ -635,7 +636,14 @@ func TestHandler_GetStatus(t *testing.T) {
 			gin.SetMode(gin.TestMode)
 			
 			cfg := &config.Config{
-				AllRepos: tt.allRepos,
+				Owners: map[string]*config.OwnerConfig{
+					"test-owner": {
+						Owner:       "test-owner",
+						GitHubToken: "test-token",
+						AllRepos:    tt.allRepos,
+						RepoName:    "test-repo",
+					},
+				},
 			}
 
 			mockManager := &MockRunnerManager{
@@ -1083,7 +1091,6 @@ func TestRealHandler_HandleWebhook_DebouncingPath_DISABLED(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	
 	cfg := &config.Config{
-		WebhookSecret: "test-secret",
 		Owners: map[string]*config.OwnerConfig{
 			"test-owner": {
 				Owner:           "test-owner",
@@ -1197,57 +1204,20 @@ func TestRealHandler_HandleWebhook_OwnerSpecificSecret_DISABLED(t *testing.T) {
 	}
 }
 
-// Test real HandleWebhook with global webhook secret fallback
-func TestRealHandler_HandleWebhook_GlobalSecretFallback_DISABLED(t *testing.T) {
-	t.Skip("Disabled due to nil pointer issues with runnerManager")
-	gin.SetMode(gin.TestMode)
-	
-	cfg := &config.Config{
-		WebhookSecret: "global-secret",
-		Owners: map[string]*config.OwnerConfig{},
-	}
-
-	handler := &Handler{
-		config:        cfg,
-		runnerManager: nil,
-		debouncer:     NewWebhookDebouncer(2 * time.Second),
-	}
-
-	payload := map[string]interface{}{
-		"repository": map[string]interface{}{
-			"full_name": "unknown/repo",
-		},
-	}
-
-	payloadBytes, _ := json.Marshal(payload)
-
-	// Create signature with global secret
-	mac := hmac.New(sha256.New, []byte("global-secret"))
-	mac.Write(payloadBytes)
-	signature := "sha256=" + hex.EncodeToString(mac.Sum(nil))
-
-	req := httptest.NewRequest("POST", "/webhook", bytes.NewReader(payloadBytes))
-	req.Header.Set("X-GitHub-Event", "ping")
-	req.Header.Set("X-Hub-Signature-256", signature)
-
-	w := httptest.NewRecorder()
-	c, _ := gin.CreateTestContext(w)
-	c.Request = req
-
-	handler.HandleWebhook(c)
-
-	if w.Code != http.StatusOK {
-		t.Errorf("HandleWebhook() status = %v, want %v", w.Code, http.StatusOK)
-	}
-}
-
 // Test real HandleWebhook with invalid signature
 func TestRealHandler_HandleWebhook_InvalidSignature_DISABLED(t *testing.T) {
 	t.Skip("Disabled due to nil pointer issues with runnerManager")
 	gin.SetMode(gin.TestMode)
 	
 	cfg := &config.Config{
-		WebhookSecret: "correct-secret",
+		Owners: map[string]*config.OwnerConfig{
+			"test": {
+				Owner:         "test",
+				GitHubToken:   "test-token",
+				AllRepos:      true,
+				WebhookSecret: "correct-secret",
+			},
+		},
 	}
 
 	handler := &Handler{
@@ -1285,7 +1255,13 @@ func TestRealHandler_GetStatusAndMetrics_DISABLED(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	
 	cfg := &config.Config{
-		AllRepos: true,
+		Owners: map[string]*config.OwnerConfig{
+			"test-owner": {
+				Owner:       "test-owner",
+				GitHubToken: "test-token",
+				AllRepos:    true,
+			},
+		},
 	}
 
 	handler := &Handler{

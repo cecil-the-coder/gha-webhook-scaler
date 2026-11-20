@@ -64,6 +64,8 @@ func NewContainerRuntime(runtimeType config.RuntimeType, cfg *config.Config) (Co
 		return NewDockerRuntime()
 	case config.RuntimeTypeKubernetes:
 		return NewKubernetesRuntimeWithConfig(cfg)
+	case config.RuntimeTypeNone:
+		return NoneRuntime{}, nil
 	default:
 		return NewDockerRuntime() // Default to Docker for backward compatibility
 	}

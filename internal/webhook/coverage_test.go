@@ -84,8 +84,9 @@ func TestCoverage_handleDebouncedEvent(t *testing.T) {
 	cfg := &config.Config{
 		Owners: map[string]*config.OwnerConfig{
 			"test-owner": {
-				Owner:    "test-owner",
-				Owners: map[string]*config.OwnerConfig{"test-owner": {Owner: "test-owner", GitHubToken: "test-token", AllRepos: true}},
+				Owner:       "test-owner",
+				GitHubToken: "test-token",
+				AllRepos:    true,
 			},
 		},
 	}
@@ -125,8 +126,9 @@ func TestCoverage_NewHandler(t *testing.T) {
 	cfg := &config.Config{
 		Owners: map[string]*config.OwnerConfig{
 			"test-owner": {
-				Owner:    "test-owner",
-				Owners: map[string]*config.OwnerConfig{"test-owner": {Owner: "test-owner", GitHubToken: "test-token", AllRepos: true}},
+				Owner:       "test-owner",
+				GitHubToken: "test-token",
+				AllRepos:    true,
 			},
 		},
 	}
@@ -160,8 +162,9 @@ func TestCoverage_processWebhookEvent(t *testing.T) {
 	cfg := &config.Config{
 		Owners: map[string]*config.OwnerConfig{
 			"test-owner": {
-				Owner:    "test-owner",
-				Owners: map[string]*config.OwnerConfig{"test-owner": {Owner: "test-owner", GitHubToken: "test-token", AllRepos: true}},
+				Owner:       "test-owner",
+				GitHubToken: "test-token",
+				AllRepos:    true,
 			},
 		},
 	}
@@ -203,8 +206,9 @@ func TestCoverage_handleWorkflowRun(t *testing.T) {
 	cfg := &config.Config{
 		Owners: map[string]*config.OwnerConfig{
 			"test-owner": {
-				Owner:    "test-owner", 
-				Owners: map[string]*config.OwnerConfig{"test-owner": {Owner: "test-owner", GitHubToken: "test-token", AllRepos: true}},
+				Owner:       "test-owner",
+				GitHubToken: "test-token",
+				AllRepos:    true,
 			},
 		},
 	}
@@ -244,10 +248,11 @@ func TestCoverage_handleWorkflowRun(t *testing.T) {
 // TestCoverage_GetStatus tests GetStatus function
 func TestCoverage_GetStatus(t *testing.T) {
 	cfg := &config.Config{
-		AllRepos: false, // Test non-AllRepos path first
 		Owners: map[string]*config.OwnerConfig{
 			"test-owner": {
-				Owner: "test-owner",
+				Owner:    "test-owner",
+				AllRepos: false, // Test non-AllRepos path first
+				RepoName: "test-repo",
 			},
 		},
 	}
@@ -306,8 +311,9 @@ func TestCoverage_handleWorkflowRunDirect(t *testing.T) {
 	cfg := &config.Config{
 		Owners: map[string]*config.OwnerConfig{
 			"test-owner": {
-				Owner:    "test-owner",
-				Owners: map[string]*config.OwnerConfig{"test-owner": {Owner: "test-owner", GitHubToken: "test-token", AllRepos: true}},
+				Owner:       "test-owner",
+				GitHubToken: "test-token",
+				AllRepos:    true,
 			},
 		},
 	}
@@ -492,8 +498,9 @@ func TestCoverage_HandleWorkflowRunDirectActions(t *testing.T) {
 	cfg := &config.Config{
 		Owners: map[string]*config.OwnerConfig{
 			"test-owner": {
-				Owner:    "test-owner",
-				Owners: map[string]*config.OwnerConfig{"test-owner": {Owner: "test-owner", GitHubToken: "test-token", AllRepos: true}},
+				Owner:       "test-owner",
+				GitHubToken: "test-token",
+				AllRepos:    true,
 			},
 		},
 	}
