@@ -200,6 +200,9 @@ func (p *Provider) metadata(pool config.BurstPool) []*computepb.Items {
 	if len(pool.RunnerEnv) > 0 {
 		items = append(items, item("runner-env", strings.Join(pool.RunnerEnv, "\n")))
 	}
+	if len(pool.Packages) > 0 {
+		items = append(items, item("packages", strings.Join(pool.Packages, " ")))
+	}
 	return items
 }
 

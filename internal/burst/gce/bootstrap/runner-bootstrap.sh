@@ -17,6 +17,7 @@
 #   runner-dir         where the runner lives (default /opt/actions-runner)
 #   runner-user        the unprivileged user it runs as (default runner)
 #   runner-env         optional NAME=VALUE lines for the runner's .env
+#   packages           optional space-separated apt packages to install
 #
 # RETRY RULE. The scaler issues one config per VM; a second request gets 409.
 # So the POST is made once. Any non-200 answer powers the VM off, and the
@@ -111,6 +112,20 @@ if ! [[ "$RUNNER_VERSION" =~ ^(latest|[0-9]+\.[0-9]+\.[0-9]+)$ ]]; then
 fi
 INSTALL_DOCKER="true"
 if meta_opt install-docker; then INSTALL_DOCKER="$META_VAL"; fi
+# check_packages: every PACKAGES entry is a plain Debian package name.
+check_packages() {
+  local pkg
+  if (( ${#PACKAGES[@]} > 64 )); then return 1; fi
+  for pkg in ${PACKAGES[@]+"${PACKAGES[@]}"}; do
+    [[ "$pkg" =~ ^[a-z0-9][a-z0-9+.-]+$ ]] || return 1
+  done
+}
+PACKAGES=()
+if meta_opt packages; then read -r -a PACKAGES <<<"$META_VAL"; fi
+if ! check_packages; then
+  log "step=metadata status=packages-malformed"
+  exit 1
+fi
 if (( ! TEST_MODE )); then
   if meta_opt runner-dir; then RUNNER_DIR="$META_VAL"; fi
   if meta_opt runner-user; then RUNNER_USER="$META_VAL"; fi
@@ -141,10 +156,12 @@ if (( ! SKIP_SYSTEM )); then
   fi
   RUNNER_HOME="$(getent passwd "$RUNNER_USER" | cut -d: -f6)"
   [[ -n "$RUNNER_HOME" ]] || { log "step=user status=no-home"; exit 1; }
+  export DEBIAN_FRONTEND=noninteractive
+  APT_UPDATED=0
+  apt_update() { (( APT_UPDATED )) || { apt-get update -qq >/dev/null 2>&1 && APT_UPDATED=1; }; }
   if [[ "$INSTALL_DOCKER" == true ]] && ! command -v docker >/dev/null; then
     log "step=docker status=installing"
-    export DEBIAN_FRONTEND=noninteractive
-    if apt-get update -qq >/dev/null 2>&1 &&
+    if apt_update &&
        { apt-get install -y -qq docker.io docker-buildx >/dev/null 2>&1 ||
          apt-get install -y -qq docker.io >/dev/null 2>&1; }; then
       systemctl enable --now docker >/dev/null 2>&1 || true
@@ -155,6 +172,15 @@ if (( ! SKIP_SYSTEM )); then
     fi
   fi
   if getent group docker >/dev/null; then usermod -aG docker "$RUNNER_USER" || true; fi
+  if (( ${#PACKAGES[@]} )); then
+    log "step=packages status=installing count=${#PACKAGES[@]}"
+    if apt_update && apt-get install -y -qq --no-install-recommends "${PACKAGES[@]}" >/dev/null 2>&1; then
+      log "step=packages status=ok"
+    else
+      # Not fatal: jobs that need them fail visibly; others still run.
+      log "step=packages status=failed"
+    fi
+  fi
 fi
 
 if [[ ! -x "$RUNNER_DIR/run.sh" ]]; then

@@ -85,6 +85,8 @@ class Meta(Quiet):
         }
         if rel in attrs:
             return self._send(200, attrs[rel].encode())
+        if rel == "instance/attributes/packages" and os.environ.get("STUB_PACKAGES"):
+            return self._send(200, os.environ["STUB_PACKAGES"].encode())
         if rel == "instance/attributes/runner-env":
             if not RUNNER_ENV_FILE:
                 return self._send(404, b"Not Found")

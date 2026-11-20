@@ -16,6 +16,7 @@
 #   runner_version  "latest" or a version such as 2.330.0
 #   install_docker  true/false
 #   runner_env      optional NAME=VALUE lines for the runner's .env
+#   packages        optional list of apt packages to install
 #
 # RETRY RULE. The scaler issues one config per VM; a second request gets 409.
 # So the POST is made once. Any non-200 answer powers the VM off, and the
@@ -122,6 +123,12 @@ try:
     env = s.get("runner_env") or []
     rdir = s.get("runner_dir") or "/opt/actions-runner"
     ruser = s.get("runner_user") or "runner"
+    pkgs = s.get("packages") or []
+    if not isinstance(pkgs, list) or len(pkgs) > 64:
+        raise ValueError("packages")
+    for pkg in pkgs:
+        if not isinstance(pkg, str) or not re.fullmatch(r"[a-z0-9][a-z0-9+.-]+", pkg):
+            raise ValueError("packages")
     if not isinstance(rdir, str) or not re.fullmatch(r"/[A-Za-z0-9._/-]+", rdir) or ".." in rdir:
         raise ValueError("runner_dir")
     if not isinstance(ruser, str) or not re.fullmatch(r"[a-z_][a-z0-9_-]{0,31}", ruser) or ruser == "root":
@@ -147,6 +154,7 @@ print(ver)
 print("true" if docker else "false")
 print(rdir)
 print(ruser)
+print(" ".join(pkgs))
 '
 {
   read -r CONFIG_URL
@@ -154,8 +162,23 @@ print(ruser)
   read -r INSTALL_DOCKER
   read -r SET_RUNNER_DIR
   read -r SET_RUNNER_USER
+  read -r SET_PACKAGES
 } < <(python3 -I -c "$SETTINGS_PY" "$WORK/runner.env" "$SETTINGS_B64" || echo FAILED)
 if [[ -z "${CONFIG_URL:-}" || "$CONFIG_URL" == FAILED || -z "${INSTALL_DOCKER:-}" ]]; then
+  log "step=settings status=failed"
+  exit 1
+fi
+# check_packages: every PACKAGES entry is a plain Debian package name.
+check_packages() {
+  local pkg
+  if (( ${#PACKAGES[@]} > 64 )); then return 1; fi
+  for pkg in ${PACKAGES[@]+"${PACKAGES[@]}"}; do
+    [[ "$pkg" =~ ^[a-z0-9][a-z0-9+.-]+$ ]] || return 1
+  done
+}
+PACKAGES=()
+read -r -a PACKAGES <<<"${SET_PACKAGES:-}"
+if ! check_packages; then
   log "step=settings status=failed"
   exit 1
 fi
@@ -173,10 +196,12 @@ if (( ! SKIP_SYSTEM )); then
   fi
   RUNNER_HOME="$(getent passwd "$RUNNER_USER" | cut -d: -f6)"
   [[ -n "$RUNNER_HOME" ]] || { log "step=user status=no-home"; exit 1; }
+  export DEBIAN_FRONTEND=noninteractive
+  APT_UPDATED=0
+  apt_update() { (( APT_UPDATED )) || { apt-get update -qq >/dev/null 2>&1 && APT_UPDATED=1; }; }
   if [[ "$INSTALL_DOCKER" == true ]] && ! command -v docker >/dev/null; then
     log "step=docker status=installing"
-    export DEBIAN_FRONTEND=noninteractive
-    if apt-get update -qq >/dev/null 2>&1 &&
+    if apt_update &&
        { apt-get install -y -qq docker.io docker-buildx >/dev/null 2>&1 ||
          apt-get install -y -qq docker.io >/dev/null 2>&1; }; then
       systemctl enable --now docker >/dev/null 2>&1 || true
@@ -187,6 +212,15 @@ if (( ! SKIP_SYSTEM )); then
     fi
   fi
   if getent group docker >/dev/null; then usermod -aG docker "$RUNNER_USER" || true; fi
+  if (( ${#PACKAGES[@]} )); then
+    log "step=packages status=installing count=${#PACKAGES[@]}"
+    if apt_update && apt-get install -y -qq --no-install-recommends "${PACKAGES[@]}" >/dev/null 2>&1; then
+      log "step=packages status=ok"
+    else
+      # Not fatal: jobs that need them fail visibly; others still run.
+      log "step=packages status=failed"
+    fi
+  fi
 fi
 
 if [[ ! -x "$RUNNER_DIR/run.sh" ]]; then

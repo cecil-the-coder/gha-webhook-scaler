@@ -150,6 +150,12 @@ builder), use `BURST_POOL_<X>_RUNNER_ENV="BUILDX_BUILDER=mybuilder;FOO=bar"`. JI
 skip `config.sh`, so they don't get a `.env` any other way. These values are public
 instance metadata: names that look like credentials are refused.
 
+If jobs expect system packages on the host (a compiler, `-dev` headers, fonts) and the job
+user has no sudo, list them with `BURST_POOL_<X>_PACKAGES="build-essential,cmake,pkg-config"`.
+The bootstrap installs them with apt before the runner starts, which adds the apt time to
+every boot; for long lists, bake them into a custom image instead. A failed install is
+logged (`step=packages status=failed`) but does not stop the boot.
+
 ### Debugging a VM
 
 The bootstrap logs steps and HTTP status codes (never tokens or configs) to the serial
@@ -413,6 +419,7 @@ before it naming the failed check (for example `caller role` when
 | `BURST_POOL_<X>_MAX_VMS` | `BURST_MAX_VMS_TOTAL` | Cap for this pool |
 | `BURST_POOL_<X>_DISK_GB` | `50` | Boot disk size |
 | `BURST_POOL_<X>_RUNNER_ENV` | | `NAME=VALUE;...` written to the runner's `.env` (public; no secrets) |
+| `BURST_POOL_<X>_PACKAGES` | | Comma-separated apt packages installed at boot (stock Debian/Ubuntu images) |
 | `BURST_GCE_PROJECT`, `BURST_GCE_ZONE` | (required for gce) | Where VMs are created |
 | `BURST_GCE_NETWORK` / `BURST_GCE_SUBNETWORK` | `default` / | VPC |
 | `BURST_GCE_VM_SERVICE_ACCOUNT` | project default SA | Identity the VMs run as |
