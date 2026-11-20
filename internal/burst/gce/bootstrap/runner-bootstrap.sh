@@ -286,6 +286,13 @@ log "step=extract status=ok"
 # in run.sh's argv while the runner lives; accepted, since it is single-use,
 # expires in about an hour and the VM is single-tenant. The file is deleted
 # before run.sh starts.
+#
+# UMASK. The bootstrap runs under `umask 077` to protect its own files, but the
+# runner and every job step inherit the umask of this shell. Under 077,
+# actions/checkout writes the workspace as 700/600, so a job container running
+# as a non-root user cannot read a bind-mounted checkout (it looks empty), while
+# root containers still can. Reset to the usual 022 just before run.sh; the
+# config file is already read and deleted by then.
 log "step=runner status=start"
 rc=0
 # shellcheck disable=SC2016 # expanded by the inner shell, from its arguments
@@ -293,5 +300,6 @@ rc=0
   bash -c 'cd -- "$1" || exit 1
 cfg="$(cat -- "$2")" || exit 1
 rm -f -- "$2"
+umask 022
 exec ./run.sh --jitconfig "$cfg"' gha-burst-runner "$RUNNER_DIR" "$JIT" || rc=$?
 log "step=runner status=exit rc=$rc"

@@ -161,6 +161,7 @@ run_case() {
   cat > "$C/runner/run.sh" <<EOF
 #!/bin/bash
 printf '%s\n' "\$@" > "$C/run.args"
+umask > "$C/run.umask"
 cp .env "$C/env.seen" 2>/dev/null || true
 EOF
   chmod +x "$C/runner/run.sh"
@@ -188,6 +189,7 @@ run_case ok "$GOOD" 200
 [[ -e "$C/powered-off" ]] && pass "ok: powered off" || fail "ok: no poweroff"
 [[ "$(sed -n 1p "$C/run.args" 2>/dev/null)" == "--jitconfig" && "$(sed -n 2p "$C/run.args")" == "ZmFrZS1qaXQtY29uZmlnLWZvci10ZXN0cw==" ]] \
   && pass "ok: run.sh --jitconfig <config>" || fail "ok: run.sh args: $(cat "$C/run.args" 2>/dev/null)"
+[[ "$(cat "$C/run.umask" 2>/dev/null)" == 0022 ]] && pass "ok: runner starts with umask 022" || fail "ok: runner umask $(cat "$C/run.umask" 2>/dev/null)"
 [[ "$(cat "$C/env.seen" 2>/dev/null)" == $'BUILDX_BUILDER=remote\nFOO=bar baz' ]] && pass "ok: .env written" || fail "ok: .env: $(cat "$C/env.seen" 2>/dev/null)"
 [[ "$(cat "$T/state/broker.log")" == "POST /v1/runner-config check=ok" ]] && pass "ok: one POST, signature and audience valid" \
   || fail "ok: broker saw: $(cat "$T/state/broker.log")"

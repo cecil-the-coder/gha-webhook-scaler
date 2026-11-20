@@ -54,6 +54,7 @@ make_tarball() { # <dir-for-records> <out.tgz>
 #!/bin/bash
 printf '%s\n' "\$@" > "$1/runner-argv"
 pwd > "$1/runner-cwd"
+umask > "$1/runner-umask"
 find "$1/run" -name jit-config > "$1/runner-saw-config"
 EOF
   chmod +x "$src/run.sh"
@@ -122,6 +123,7 @@ check_ran() { # <name>
     fail "$name: run.sh argv wrong"
   fi
   [[ "$(cat "$c/runner-cwd" 2>/dev/null)" == "$c/runner" ]] && pass "$name: run from runner dir" || fail "$name: wrong cwd"
+  [[ "$(cat "$c/runner-umask" 2>/dev/null)" == 0022 ]] && pass "$name: runner starts with umask 022" || fail "$name: runner umask $(cat "$c/runner-umask" 2>/dev/null)"
   [[ -f "$c/runner-saw-config" && ! -s "$c/runner-saw-config" ]] && pass "$name: config deleted before run.sh" || fail "$name: config file present at run.sh"
   if grep -rl -e "$BLOB" "$c/run" "$c/log" "$c/stubs.log" 2>/dev/null | grep -q .; then
     fail "$name: config found outside run.sh argv"
