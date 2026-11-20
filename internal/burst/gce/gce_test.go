@@ -60,6 +60,7 @@ func testProvider(api *fakeAPI) *Provider {
 var pool = config.BurstPool{Name: "arm", MachineType: "t2a-standard-4",
 	Image: "projects/ubuntu-os-cloud/global/images/family/ubuntu-2404-lts-arm64", Arch: "arm64",
 	DiskGB: 40, Prefix: "gha-burst-arm-", RunnerEnv: []string{"A=1", "B=two"},
+	Packages:  []string{"cmake", "libfreetype-dev"},
 	RunnerDir: "/home/ghrunner/actions-runner", RunnerUser: "ghrunner"}
 
 func TestCreate_RequestShape(t *testing.T) {
@@ -103,14 +104,14 @@ func TestCreate_RequestShape(t *testing.T) {
 		meta[it.GetKey()] = it.GetValue()
 	}
 	want := map[string]string{"runner-config-url": "https://scaler.example.com/v1/runner-config",
-		"runner-version": "latest", "install-docker": "true", "runner-env": "A=1\nB=two",
+		"runner-version": "latest", "install-docker": "true", "runner-env": "A=1\nB=two", "packages": "cmake libfreetype-dev",
 		"runner-dir": "/home/ghrunner/actions-runner", "runner-user": "ghrunner"}
 	for k, v := range want {
 		if meta[k] != v {
 			t.Errorf("metadata %s = %q, want %q", k, meta[k], v)
 		}
 	}
-	if !strings.HasPrefix(meta["startup-script"], "#!/bin/bash") || len(meta) != 7 {
+	if !strings.HasPrefix(meta["startup-script"], "#!/bin/bash") || len(meta) != 8 {
 		t.Errorf("metadata keys = %d, startup-script ok = %v", len(meta), strings.HasPrefix(meta["startup-script"], "#!"))
 	}
 }
@@ -129,10 +130,11 @@ func TestCreate_NoRunnerEnvNoItem(t *testing.T) {
 	api := &fakeAPI{op: fakeOp{pb: &computepb.Operation{}}}
 	p := pool
 	p.RunnerEnv = nil
+	p.Packages = nil
 	testProvider(api).Create(context.Background(), p, "n")
 	for _, it := range api.insertReq.GetInstanceResource().GetMetadata().GetItems() {
-		if it.GetKey() == "runner-env" {
-			t.Error("runner-env item must be absent when empty")
+		if it.GetKey() == "runner-env" || it.GetKey() == "packages" {
+			t.Errorf("%s item must be absent when empty", it.GetKey())
 		}
 	}
 }

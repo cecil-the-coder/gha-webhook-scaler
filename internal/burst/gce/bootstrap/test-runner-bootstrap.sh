@@ -183,6 +183,19 @@ else
   fail "env: malformed line not refused"
 fi
 
+STUB_PACKAGES="cmake libfreetype-dev g++" run_case withpkgs 200 installed
+c="$WORK/withpkgs"
+[[ "$(cat "$c/rc")" == 0 && -e "$c/runner-argv" ]] && pass "packages: valid names accepted" || fail "packages: valid list refused"
+
+STUB_PACKAGES="cmake -oAPT::x=1" run_case badpkgs 200 installed
+c="$WORK/badpkgs"
+if [[ "$(cat "$c/rc")" == 1 && ! -e "$c/runner-argv" ]] && grep -q "step=metadata status=packages-malformed" "$c/log" \
+   && ! grep -q -e "-X POST" "$c/curl-argv"; then
+  pass "packages: malformed name stops the boot before any config request"
+else
+  fail "packages: malformed name not refused"
+fi
+
 echo
 if (( fails == 0 )); then echo "ALL PASS"; exit 0; fi
 echo "$fails FAILED"

@@ -82,6 +82,11 @@ type BurstPool struct {
 	// metadata, so credential-looking names are refused.
 	RunnerEnv []string // NAME=VALUE
 
+	// Packages are extra apt packages the bootstrap installs on stock images,
+	// for jobs that expect them on the host (compilers, -dev headers, fonts).
+	// Debian package names only; they travel in PUBLIC instance metadata.
+	Packages []string
+
 	// Where a baked image keeps the runner, and the user it runs as. Stock
 	// images get the runner installed here.
 	RunnerDir  string
@@ -261,6 +266,7 @@ func loadBurstConfig() BurstConfig {
 			DiskGB:      getEnvInt(env+"DISK_GB", 50),
 			Prefix:      fmt.Sprintf("%s-%s-", b.vmPrefix(), name),
 			RunnerEnv:   splitEnvPairs(getEnv(env+"RUNNER_ENV", "")),
+			Packages:    getEnvList(env+"PACKAGES", nil),
 			RunnerDir:   getEnv(env+"RUNNER_DIR", "/opt/actions-runner"),
 			RunnerUser:  getEnv(env+"RUNNER_USER", "runner"),
 		}
@@ -361,9 +367,22 @@ func (b BurstConfig) Validate() error {
 		if err := validateRunnerEnv(p.RunnerEnv); err != nil {
 			return fmt.Errorf("BURST_POOL_%s_RUNNER_ENV: %w", strings.ToUpper(p.Name), err)
 		}
+		if len(p.Packages) > maxPoolPackages {
+			return fmt.Errorf("BURST_POOL_%s_PACKAGES lists %d packages, over %d", strings.ToUpper(p.Name), len(p.Packages), maxPoolPackages)
+		}
+		for _, pkg := range p.Packages {
+			if !aptPackageRE.MatchString(pkg) {
+				return fmt.Errorf("BURST_POOL_%s_PACKAGES: %q is not a Debian package name", strings.ToUpper(p.Name), pkg)
+			}
+		}
 	}
 	return nil
 }
+
+// aptPackageRE is a Debian package name (policy 5.6.1), no version or arch suffix.
+var aptPackageRE = regexp.MustCompile(`^[a-z0-9][a-z0-9+.-]+$`)
+
+const maxPoolPackages = 64
 
 var (
 	awsRegionRE   = regexp.MustCompile(`^[a-z]{2}(-[a-z]+)+-[0-9]+$`)

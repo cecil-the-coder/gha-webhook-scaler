@@ -265,6 +265,7 @@ type vmSettings struct {
 	RunnerEnv     []string `json:"runner_env"`
 	RunnerDir     string   `json:"runner_dir,omitempty"`
 	RunnerUser    string   `json:"runner_user,omitempty"`
+	Packages      []string `json:"packages,omitempty"`
 }
 
 // userData renders the bootstrap with the pool's settings, gzipped (cloud-init
@@ -296,6 +297,7 @@ func RenderUserData(cfg config.BurstConfig, pool config.BurstPool) (string, erro
 		RunnerEnv:     append([]string{}, pool.RunnerEnv...),
 		RunnerDir:     pool.RunnerDir,
 		RunnerUser:    pool.RunnerUser,
+		Packages:      append([]string(nil), pool.Packages...),
 	})
 	if err != nil {
 		return "", err

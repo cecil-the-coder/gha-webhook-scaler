@@ -37,6 +37,7 @@ func TestBurstConfig_DefaultsAndPools(t *testing.T) {
 		"BURST_POOL_ARM_MACHINE_TYPE": "t2a-standard-4",
 		"BURST_POOL_ARM_LABELS":       "build, big",
 		"BURST_POOL_ARM_RUNNER_ENV":   "BUILDX_BUILDER=remote; FOO=bar baz",
+		"BURST_POOL_ARM_PACKAGES":     "build-essential, libfreetype-dev,g++",
 		"BURST_POOL_X64_MAX_VMS":      "2",
 		"BURST_AFTER":                 "45s",
 		"BURST_MAX_VM_HOURS_PER_DAY":  "2.5",
@@ -64,6 +65,9 @@ func TestBurstConfig_DefaultsAndPools(t *testing.T) {
 	if len(arm.RunnerEnv) != 2 || arm.RunnerEnv[1] != "FOO=bar baz" {
 		t.Errorf("runner env = %q", arm.RunnerEnv)
 	}
+	if got := strings.Join(arm.Packages, " "); got != "build-essential libfreetype-dev g++" || len(x64.Packages) != 0 {
+		t.Errorf("packages = %q / %q", arm.Packages, x64.Packages)
+	}
 	if p, ok := b.PoolFor("gha-burst-arm-0a1b2c3d"); !ok || p.Name != "arm" {
 		t.Errorf("PoolFor = %v %v", p.Name, ok)
 	}
@@ -82,6 +86,10 @@ func TestBurstConfig_Rejects(t *testing.T) {
 		"reserved env": {"BURST_POOL_X64_RUNNER_ENV": "RUNNER_TEMP=/x"},
 		"dup env":      {"BURST_POOL_X64_RUNNER_ENV": "A=1;A=2"},
 		"bad env":      {"BURST_POOL_X64_RUNNER_ENV": "1A=x"},
+		"pkg version":  {"BURST_POOL_X64_PACKAGES": "cmake=3.28"},
+		"pkg option":   {"BURST_POOL_X64_PACKAGES": "-o,cmake"},
+		"pkg upper":    {"BURST_POOL_X64_PACKAGES": "CMake"},
+		"pkg space":    {"BURST_POOL_X64_PACKAGES": "cmake make"},
 		"total cap":    {"BURST_MAX_VMS_TOTAL": "0"},
 	}
 	for name, kv := range cases {

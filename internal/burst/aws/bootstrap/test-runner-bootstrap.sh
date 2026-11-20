@@ -181,7 +181,7 @@ EOF
   RC=$?
 }
 
-GOOD="{\"config_url\":\"$CONFIG_URL\",\"runner_version\":\"2.330.0\",\"install_docker\":true,\"runner_env\":[\"BUILDX_BUILDER=remote\",\"FOO=bar baz\"]}"
+GOOD="{\"config_url\":\"$CONFIG_URL\",\"runner_version\":\"2.330.0\",\"install_docker\":true,\"runner_env\":[\"BUILDX_BUILDER=remote\",\"FOO=bar baz\"],\"packages\":[\"cmake\",\"libfreetype-dev\"]}"
 
 # ── Case 1: happy path ──────────────────────────────────────────────────────
 run_case ok "$GOOD" 200
@@ -216,6 +216,9 @@ run_case badurl '{"config_url":"http://127.0.0.1/v1/runner-config"}' 200
 
 run_case badenv "{\"config_url\":\"$CONFIG_URL\",\"runner_env\":[\"BAD LINE\"]}" 200
 [[ $RC != 0 && -e "$C/powered-off" && ! -s "$T/state/broker.log" ]] && pass "bad env: refused" || fail "bad env: rc=$RC"
+
+run_case badpkg "{\"config_url\":\"$CONFIG_URL\",\"packages\":[\"cmake;rm\"]}" 200
+[[ $RC != 0 && -e "$C/powered-off" && ! -s "$T/state/broker.log" ]] && pass "bad package: refused" || fail "bad package: rc=$RC"
 
 # ── Case 4: no IMDS at all; fails closed ────────────────────────────────────
 C="$T/noimds"

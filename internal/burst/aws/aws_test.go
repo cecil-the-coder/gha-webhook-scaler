@@ -102,6 +102,7 @@ func testPool() config.BurstPool {
 	return config.BurstPool{
 		Name: "x64", MachineType: "m7i.xlarge", Image: testSSMPath, Arch: "x64",
 		DiskGB: 50, Prefix: "gha-burst-x64-", RunnerEnv: []string{"BUILDX_BUILDER=remote", "FOO=bar baz"},
+		Packages: []string{"cmake", "fonts-dejavu-core"},
 	}
 }
 
@@ -168,7 +169,8 @@ func TestCreate_RequestShape(t *testing.T) {
 	}
 	s := settingsOf(t, script)
 	if s.ConfigURL != "https://scaler.example.com/v1/runner-config" || s.RunnerVersion != "2.330.0" || !s.InstallDocker ||
-		strings.Join(s.RunnerEnv, "|") != "BUILDX_BUILDER=remote|FOO=bar baz" {
+		strings.Join(s.RunnerEnv, "|") != "BUILDX_BUILDER=remote|FOO=bar baz" ||
+		strings.Join(s.Packages, " ") != "cmake fonts-dejavu-core" {
 		t.Errorf("settings = %+v", s)
 	}
 
