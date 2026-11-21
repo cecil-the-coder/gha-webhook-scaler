@@ -169,12 +169,16 @@ func TestApplication_LogStartupInfo(t *testing.T) {
 	// Set specific config values for testing
 	app.Config.Port = 8080
 	app.Config.Runtime = config.RuntimeTypeDocker
-	app.Config.AllRepos = true
-	app.Config.RepoOwner = "testowner"
-	app.Config.RepoName = "testrepo"
+	app.Config.Owners = map[string]*config.OwnerConfig{
+		"testowner": {
+			Owner:         "testowner",
+			GitHubToken:   "test-token",
+			WebhookSecret: "test-secret",
+			AllRepos:      true,
+		},
+	}
 	app.Config.Architecture = "amd64"
 	app.Config.MaxRunners = 5
-	app.Config.WebhookSecret = "test-secret"
 
 	app.logStartupInfo()
 
@@ -184,10 +188,10 @@ func TestApplication_LogStartupInfo(t *testing.T) {
 	assert.Contains(t, logOutput, "Starting GitHub Actions Auto-Scaler")
 	assert.Contains(t, logOutput, "Server starting on port 8080")
 	assert.Contains(t, logOutput, "Container runtime: docker")
-	assert.Contains(t, logOutput, "Repository scope: All repositories under testowner")
+	assert.Contains(t, logOutput, "Configured owners: 1")
+	assert.Contains(t, logOutput, "testowner: All repositories")
 	assert.Contains(t, logOutput, "Host architecture: amd64")
 	assert.Contains(t, logOutput, "Max runners: 5")
-	assert.Contains(t, logOutput, "Webhook secret configured: true")
 }
 
 func TestApplication_LogStartupInfo_Kubernetes(t *testing.T) {
@@ -202,16 +206,21 @@ func TestApplication_LogStartupInfo_Kubernetes(t *testing.T) {
 	app.Config.Runtime = config.RuntimeTypeKubernetes
 	app.Config.CacheVolumes = true
 	app.Config.KubernetesPVCs = true
-	app.Config.AllRepos = false
-	app.Config.RepoOwner = "testowner"
-	app.Config.RepoName = "testrepo"
+	app.Config.Owners = map[string]*config.OwnerConfig{
+		"testowner": {
+			Owner:       "testowner",
+			GitHubToken: "test-token",
+			AllRepos:    false,
+			RepoName:    "testrepo",
+		},
+	}
 
 	app.logStartupInfo()
 
 	logOutput := buf.String()
 	
 	assert.Contains(t, logOutput, "Container runtime: kubernetes")
-	assert.Contains(t, logOutput, "Repository: testowner/testrepo")
+	assert.Contains(t, logOutput, "testowner: testowner/testrepo")
 	assert.Contains(t, logOutput, "Kubernetes mode: Multi-architecture scheduling enabled")
 	assert.Contains(t, logOutput, "Kubernetes caching: PersistentVolumeClaims enabled")
 }
@@ -488,16 +497,19 @@ func TestApplication_LogStartupInfo_Scenarios(t *testing.T) {
 		{
 			name: "Single Repository Mode",
 			setupConfig: func(cfg *config.Config) {
-				cfg.AllRepos = false
-				cfg.RepoOwner = "testowner"
-				cfg.RepoName = "testrepo"
+				cfg.Owners = map[string]*config.OwnerConfig{
+					"testowner": {
+						Owner:       "testowner",
+						GitHubToken: "test-token",
+						AllRepos:    false,
+						RepoName:    "testrepo",
+					},
+				}
 				cfg.Runtime = config.RuntimeTypeDocker
-				cfg.WebhookSecret = ""
 			},
 			expectedLogs: []string{
-				"Repository: testowner/testrepo",
+				"testowner: testowner/testrepo",
 				"Container runtime: docker",
-				"Webhook secret configured: false",
 			},
 		},
 		{

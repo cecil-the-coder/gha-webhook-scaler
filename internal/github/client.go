@@ -17,6 +17,7 @@ import (
 
 type Client struct {
 	Token           string
+	BaseURL         string // API base; empty means https://api.github.com (used by burst.go)
 	httpClient      *http.Client
 	rateLimitMu     sync.Mutex
 	rateLimitRemaining int
@@ -187,6 +188,15 @@ func (g *Client) MakeRequestWithBackoff(req *http.Request) (*http.Response, erro
 		// Check rate limit before making request
 		if err := g.checkRateLimit(); err != nil {
 			return nil, err
+		}
+
+		if attempt > 0 && req.GetBody != nil {
+			// Rewind the body before a retry; the first attempt consumed it.
+			body, err := req.GetBody()
+			if err != nil {
+				return nil, err
+			}
+			req.Body = body
 		}
 
 		resp, err := g.httpClient.Do(req)

@@ -169,6 +169,25 @@ OWNER_CLIENT_ORG_WEBHOOK_SECRET=client_secret
 - Legacy configuration using `GITHUB_TOKEN` and `REPO_OWNER` is still supported for backward compatibility
 
 
+### Burst Runners on Cloud VMs
+
+Jobs can overflow onto short-lived VMs in your own cloud account when your Docker or
+Kubernetes runners are full, or when a job has waited too long. Each VM is an ephemeral,
+single-job runner. It fetches a single-use JIT config from the scaler using its cloud
+identity token, so no GitHub token is ever put on a VM.
+
+```bash
+BURST_PROVIDER=gce
+BURST_PUBLIC_URL=https://scaler.example.com
+BURST_GCE_PROJECT=my-ci-project
+BURST_GCE_ZONE=us-central1-a
+BURST_POOLS=x64,arm
+BURST_POOL_ARM_MACHINE_TYPE=t2a-standard-4
+```
+
+See [docs/burst-runners.md](docs/burst-runners.md) for setup, the security model and
+all settings.
+
 ## 🔗 API Endpoints
 
 ### Core Endpoints

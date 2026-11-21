@@ -30,6 +30,20 @@ type Manager struct {
 	metrics *Metrics
 	mu      sync.RWMutex
 
+	// overflow is told when an owner is at its runner cap, so burst runners
+	// can take its waiting jobs at once (nil when burst is off)
+	overflow OverflowNotifier
+}
+
+// OverflowNotifier receives "this owner is at capacity" signals. The burst
+// controller (internal/burst) implements it.
+type OverflowNotifier interface {
+	Saturated(owner, repoFullName string)
+}
+
+// SetOverflow wires the burst controller in.
+func (rm *Manager) SetOverflow(o OverflowNotifier) {
+	rm.overflow = o
 }
 
 type Metrics struct {
@@ -72,6 +86,14 @@ func (rm *Manager) ScaleUpWithLabels(reason string, repoFullName string, repoNam
 		return fmt.Errorf("failed to get owner config for repo %s: %w", repoFullName, err)
 	}
 
+	// RUNTIME=none: no local runners. Hand the job straight to burst runners.
+	if rm.runtime != nil && rm.runtime.GetRuntimeType() == config.RuntimeTypeNone {
+		if rm.overflow != nil {
+			rm.overflow.Saturated(ownerConfig.Owner, repoFullName)
+		}
+		return nil
+	}
+
 	// Get the GitHub client for this owner
 	githubClient, exists := rm.githubClients[ownerConfig.Owner]
 	if !exists {
@@ -102,6 +124,9 @@ func (rm *Manager) ScaleUpWithLabels(reason string, repoFullName string, repoNam
 	// Calculate how many runners we can start for THIS OWNER
 	availableSlots := maxRunners - ownerRunnerCount
 	if availableSlots <= 0 {
+		if rm.overflow != nil {
+			rm.overflow.Saturated(ownerConfig.Owner, repoFullName)
+		}
 		// We're at max capacity, add to queue memory
 		jobCount := rm.getQueuedJobCount(githubClient, ownerConfig.Owner, repoName)
 		if jobCount > 0 {
