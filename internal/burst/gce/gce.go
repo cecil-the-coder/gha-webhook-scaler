@@ -68,20 +68,9 @@ func (e *OpError) CapacityCode() string {
 // insertError is an insert refused outright. Quota can show up here too.
 type insertError struct{ err error }
 
-func (e *insertError) Error() string { return "insert refused: " + e.err.Error() }
-func (e *insertError) Unwrap() error { return e.err }
-func (e *insertError) CapacityCode() string {
-	msg := e.err.Error()
-	for _, c := range capacityCodes {
-		if strings.Contains(msg, c) {
-			return c
-		}
-	}
-	if strings.Contains(msg, "quotaExceeded") {
-		return "QUOTA_EXCEEDED"
-	}
-	return ""
-}
+func (e *insertError) Error() string        { return "insert refused: " + e.err.Error() }
+func (e *insertError) Unwrap() error        { return e.err }
+func (e *insertError) CapacityCode() string { return capacityCodeIn(e.err.Error()) }
 
 // operation is the part of an SDK operation the provider uses.
 type operation interface {
@@ -132,9 +121,11 @@ func (p *Provider) Create(ctx context.Context, pool config.BurstPool, name strin
 	}
 	wctx, cancel := context.WithTimeout(ctx, p.opWait)
 	defer cancel()
-	if err := op.Wait(wctx); err != nil {
-		return fmt.Errorf("%w: operation %s: %v", burst.ErrOutcomeUnknown, op.Proto().GetName(), err)
-	}
+	waitErr := op.Wait(wctx)
+	// The SDK's Wait returns an error when the operation finished FAILED, not
+	// only when the wait itself ran out. Telling them apart matters: a failed
+	// operation (quota, zone exhaustion) means the VM does not exist and the
+	// controller must back off, while a timeout means it may still appear.
 	if errs := op.Proto().GetError().GetErrors(); len(errs) > 0 {
 		oe := &OpError{Op: op.Proto().GetName()}
 		for _, e := range errs {
@@ -143,8 +134,41 @@ func (p *Provider) Create(ctx context.Context, pool config.BurstPool, name strin
 		}
 		return oe
 	}
+	if waitErr != nil {
+		// No error detail on the operation; fall back to the error text.
+		if code := capacityCodeIn(waitErr.Error()); code != "" {
+			return &waitCapacityError{op: op.Proto().GetName(), err: waitErr, code: code}
+		}
+		return fmt.Errorf("%w: operation %s: %v", burst.ErrOutcomeUnknown, op.Proto().GetName(), waitErr)
+	}
 	return nil
 }
+
+// capacityCodeIn returns the capacity code named in msg, or "".
+func capacityCodeIn(msg string) string {
+	for _, c := range capacityCodes {
+		if strings.Contains(msg, c) {
+			return c
+		}
+	}
+	if strings.Contains(msg, "quotaExceeded") {
+		return "QUOTA_EXCEEDED"
+	}
+	return ""
+}
+
+// waitCapacityError is a Wait failure whose text names a capacity code.
+type waitCapacityError struct {
+	op   string
+	err  error
+	code string
+}
+
+func (e *waitCapacityError) Error() string {
+	return fmt.Sprintf("operation %s failed: %v", e.op, e.err)
+}
+func (e *waitCapacityError) Unwrap() error        { return e.err }
+func (e *waitCapacityError) CapacityCode() string { return e.code }
 
 func (p *Provider) instance(pool config.BurstPool, name string) *computepb.Instance {
 	g := p.cfg.GCE
