@@ -156,6 +156,8 @@ func TestCreate_Outcomes(t *testing.T) {
 	}{
 		{"done", &fakeAPI{op: fakeOp{pb: &computepb.Operation{}}}, false, "", true},
 		{"wait timeout", &fakeAPI{op: fakeOp{waitErr: context.DeadlineExceeded, pb: &computepb.Operation{}}}, true, "", false},
+		{"wait error carries failed op", &fakeAPI{op: fakeOp{waitErr: errors.New("op failed"), pb: opErr("QUOTA_EXCEEDED")}}, false, "QUOTA_EXCEEDED", false},
+		{"wait error text names quota", &fakeAPI{op: fakeOp{waitErr: errors.New("Quota 'CPUS_ALL_REGIONS' exceeded: QUOTA_EXCEEDED"), pb: &computepb.Operation{}}}, false, "QUOTA_EXCEEDED", false},
 		{"quota in op", &fakeAPI{op: fakeOp{pb: opErr("QUOTA_EXCEEDED")}}, false, "QUOTA_EXCEEDED", false},
 		{"zone exhausted", &fakeAPI{op: fakeOp{pb: opErr("OTHER", "ZONE_RESOURCE_POOL_EXHAUSTED")}}, false, "ZONE_RESOURCE_POOL_EXHAUSTED", false},
 		{"other op error", &fakeAPI{op: fakeOp{pb: opErr("INVALID")}}, false, "", false},
