@@ -337,6 +337,7 @@ func (c *Controller) Tick(ctx context.Context) error {
 	}
 	byPool := map[string][]vm{}
 	total := 0
+	held := 0 // VMs being deleted that the provider still lists: they hold quota
 	scopes := map[Target]bool{}
 	listed := make(map[string]bool, len(all))
 	for _, in := range all {
@@ -353,7 +354,11 @@ func (c *Controller) Tick(ctx context.Context) error {
 			continue
 		}
 		if _, gone := c.deleting[in.Name]; gone {
-			continue // already being deleted: neither active nor deleted again
+			// Already being deleted: neither active nor deleted again. It still
+			// holds its vCPUs until the provider stops listing it, so it uses
+			// up room under the total cap (see below).
+			held++
+			continue
 		}
 		t, known := c.reg.TargetOf(p.Name, in.Name)
 		byPool[p.Name] = append(byPool[p.Name], vm{Instance: in, target: t, known: known})
@@ -387,7 +392,9 @@ func (c *Controller) Tick(ctx context.Context) error {
 
 	// 4. Reconcile each pool. Deletes first, then creates within the caps.
 	next := make(map[string]bool, total)
-	room := max(c.cfg.MaxVMsTotal-total, 0) // combined room; deletes free none this tick
+	// Combined room. Deletes free none this tick, and VMs still winding down
+	// count: creating into their vCPUs is refused as QUOTA_EXCEEDED.
+	room := max(c.cfg.MaxVMsTotal-total-held, 0)
 	vmsByPool := map[string]int{}
 	timeouts := Timeouts{Idle: c.cfg.IdleTimeout, Boot: c.cfg.BootTimeout, MaxAge: c.cfg.MaxVMAge}
 	for _, p := range rotate(c.cfg.Pools, c.turn) {

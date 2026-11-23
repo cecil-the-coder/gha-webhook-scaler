@@ -412,3 +412,37 @@ func TestTick_DeletedVMStillListedIsNotDeletedTwice(t *testing.T) {
 		t.Errorf("after grace the delete must be retried, deleted=%v", h.prov.deleted)
 	}
 }
+
+func TestTick_DeletingVMStillHoldsRoom(t *testing.T) {
+	cfg := testConfig(t)
+	cfg.Burst.MaxVMsTotal = 1
+	h := newHarness(t, cfg)
+	h.prov.lingerOnDelete = true
+	h.c.NoteJob("acme/app")
+	h.job("acme/app", time.Hour, "self-hosted", "x64")
+	h.tick(t)
+	name := h.only()
+	scope := github.RunnerScope{Owner: "acme"}
+	h.forge.runners[scope] = []github.Runner{{Name: name, Busy: true}}
+	h.forge.jobs["acme/app"] = nil
+	h.tick(t)
+	h.forge.runners[scope] = nil
+	h.tick(t) // job_done -> delete; the VM stays listed while it winds down
+	if len(h.prov.deleted) != 1 {
+		t.Fatalf("deleted %v, want one", h.prov.deleted)
+	}
+	// A new job arrives while the old VM is still listed: its vCPUs are not
+	// free yet, so no create may be attempted (it would be refused for quota).
+	h.job("acme/app", time.Hour, "self-hosted", "x64")
+	h.tick(t)
+	h.tick(t)
+	if len(h.prov.created) != 1 {
+		t.Fatalf("create while a deleting VM holds the only slot: created=%v", h.prov.created)
+	}
+	// Once the provider stops listing it, the slot is free again.
+	delete(h.prov.vms, name)
+	h.tick(t)
+	if len(h.prov.created) != 2 {
+		t.Errorf("slot freed, want a second create: created=%v", h.prov.created)
+	}
+}
