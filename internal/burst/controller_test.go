@@ -412,3 +412,68 @@ func TestTick_DeletedVMStillListedIsNotDeletedTwice(t *testing.T) {
 		t.Errorf("after grace the delete must be retried, deleted=%v", h.prov.deleted)
 	}
 }
+
+func TestTick_VanishedVMIsCountedAndForgotten(t *testing.T) {
+	h := newHarness(t, testConfig(t))
+	h.c.NoteJob("acme/app")
+	h.job("acme/app", time.Hour, "self-hosted", "x64")
+	h.tick(t)
+	name := h.only()
+	scope := github.RunnerScope{Owner: "acme"}
+	h.forge.runners[scope] = []github.Runner{{Name: name, Busy: true}}
+	h.forge.jobs["acme/app"] = nil
+	h.tick(t)
+
+	// Spot preemption with instanceTerminationAction=DELETE: GCE removes the VM itself.
+	delete(h.prov.vms, name)
+	h.forge.runners[scope] = nil
+	h.tick(t)
+
+	if got := h.c.Status().VMsVanished; got != 1 {
+		t.Fatalf("vanished = %d, want 1", got)
+	}
+	if len(h.prov.deleted) != 0 {
+		t.Errorf("a vanished VM must not be deleted by the scaler, deleted=%v", h.prov.deleted)
+	}
+	if _, ok := h.c.reg.TargetOf("x64", name); ok {
+		t.Error("a vanished VM must leave pending")
+	}
+	h.tick(t)
+	if got := h.c.Status().VMsVanished; got != 1 {
+		t.Errorf("a vanished VM is reported once, got %d", got)
+	}
+}
+
+func TestTick_OwnDeleteAndSelfStopAreNotVanished(t *testing.T) {
+	h := newHarness(t, testConfig(t))
+	h.c.NoteJob("acme/app")
+	h.job("acme/app", time.Hour, "self-hosted", "x64")
+	h.tick(t)
+	name := h.only()
+	scope := github.RunnerScope{Owner: "acme"}
+	h.forge.runners[scope] = []github.Runner{{Name: name, Busy: true}}
+	h.forge.jobs["acme/app"] = nil
+	h.tick(t)
+	h.forge.runners[scope] = nil
+	h.tick(t) // job_done: the scaler deletes it, and the provider drops it
+	h.tick(t)
+
+	// A VM that powers itself off stays listed, not running: reaped as not_running.
+	h.c.NoteJob("acme/app")
+	h.job("acme/app", time.Hour, "self-hosted", "x64")
+	h.tick(t)
+	second := h.only()
+	v := h.prov.vms[second]
+	v.Running = false
+	h.prov.vms[second] = v
+	h.forge.jobs["acme/app"] = nil
+	h.tick(t)
+	h.tick(t)
+
+	if len(h.prov.deleted) != 2 {
+		t.Fatalf("deleted %v, want the job_done and the not_running VM", h.prov.deleted)
+	}
+	if got := h.c.Status().VMsVanished; got != 0 {
+		t.Errorf("own deletes are not vanishes, got %d", got)
+	}
+}

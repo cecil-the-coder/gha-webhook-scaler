@@ -24,6 +24,12 @@ import (
 //go:embed bootstrap/runner-bootstrap.sh
 var bootstrapScript string
 
+// shutdownScript stops the runner gracefully when the VM stops, so a spot
+// preemption fails its job at once instead of after GitHub's heartbeat timeout.
+//
+//go:embed bootstrap/runner-shutdown.sh
+var shutdownScript string
+
 // BootstrapScript returns the startup script every burst VM runs.
 func BootstrapScript() string { return bootstrapScript }
 
@@ -191,6 +197,7 @@ func (p *Provider) metadata(pool config.BurstPool) []*computepb.Items {
 	}
 	items := []*computepb.Items{
 		item("startup-script", bootstrapScript),
+		item("shutdown-script", shutdownScript),
 		item("runner-config-url", p.cfg.PublicURL),
 		item("runner-version", p.cfg.RunnerVersion),
 		item("install-docker", strconv.FormatBool(p.cfg.InstallDocker)),
