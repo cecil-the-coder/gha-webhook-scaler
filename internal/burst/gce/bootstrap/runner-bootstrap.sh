@@ -2,7 +2,9 @@
 # runner-bootstrap.sh: the startup script of one burst runner VM.
 #
 # GCE runs this as root at boot. It:
-#   1. installs the GitHub runner (and Docker) if the image lacks them,
+#   1. stops unattended-upgrades (its 30 s shutdown delay outlasts a spot
+#      preemption), then installs the GitHub runner (and Docker) if the image
+#      lacks them,
 #   2. asks the scaler for ONE single-use JIT runner config, authenticated by
 #      the VM's own instance identity token,
 #   3. runs `run.sh --jitconfig <config>` as the unprivileged runner user,
@@ -148,6 +150,19 @@ fi
 command -v python3 >/dev/null || { log "step=start status=no-python3"; exit 1; }
 install -d -m 0755 "$RUN_DIR" || { log "step=workdir status=run-dir-failed"; exit 1; }
 WORK="$(mktemp -d "$RUN_DIR/work.XXXXXX")" || { log "step=workdir status=failed"; exit 1; }
+
+# ── 1b. No shutdown delay ────────────────────────────────────────────────────
+# Ubuntu's unattended-upgrades.service holds a logind "delay" inhibitor, and the
+# image's unattended-upgrades-logind-maxdelay.conf raises InhibitDelayMaxSec to
+# 30 s. A spot preemption allows about 30 s, so GCE hard-stopped the VM before
+# shutdown began: no shutdown-script, no signal to the runner, and the job was
+# lost as "lost communication". A one-job VM never needs upgrades, so stop the
+# service, which releases the inhibitor and lets shutdown start at once.
+if (( ! SKIP_SYSTEM )); then
+  systemctl stop unattended-upgrades.service >/dev/null 2>&1 || log "step=inhibitor status=stop-failed"
+  DELAY_LOCKS="$(systemd-inhibit --list --no-pager --no-legend 2>/dev/null | grep -cE '[[:space:]]delay[[:space:]]*$' || true)"
+  log "step=inhibitor delay_locks=${DELAY_LOCKS:-unknown}"
+fi
 
 # ── 2. Runner user, Docker and the runner itself (stock images only) ────────
 if (( ! SKIP_SYSTEM )); then
