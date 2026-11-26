@@ -159,7 +159,9 @@ WORK="$(mktemp -d "$RUN_DIR/work.XXXXXX")" || { log "step=workdir status=failed"
 # lost as "lost communication". A one-job VM never needs upgrades, so stop the
 # service, which releases the inhibitor and lets shutdown start at once.
 if (( ! SKIP_SYSTEM )); then
-  systemctl stop unattended-upgrades.service >/dev/null 2>&1 || log "step=inhibitor status=stop-failed"
+  # Bounded: a stop can wait on an unattended-upgrade run already in progress (up to
+  # 30 min), which would stall the boot. 15 s, then carry on and report the locks.
+  timeout 15 systemctl stop unattended-upgrades.service >/dev/null 2>&1 || log "step=inhibitor status=stop-failed"
   DELAY_LOCKS="$(systemd-inhibit --list --no-pager --no-legend 2>/dev/null | grep -cE '[[:space:]]delay[[:space:]]*$' || true)"
   log "step=inhibitor delay_locks=${DELAY_LOCKS:-unknown}"
 fi
