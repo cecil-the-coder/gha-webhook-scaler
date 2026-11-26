@@ -111,7 +111,10 @@ func TestCreate_RequestShape(t *testing.T) {
 			t.Errorf("metadata %s = %q, want %q", k, meta[k], v)
 		}
 	}
-	if !strings.HasPrefix(meta["startup-script"], "#!/bin/bash") || len(meta) != 8 {
+	if !strings.HasPrefix(meta["shutdown-script"], "#!/bin/bash") {
+		t.Error("shutdown-script must be set, so a preempted runner fails its job at once")
+	}
+	if !strings.HasPrefix(meta["startup-script"], "#!/bin/bash") || len(meta) != 9 {
 		t.Errorf("metadata keys = %d, startup-script ok = %v", len(meta), strings.HasPrefix(meta["startup-script"], "#!"))
 	}
 }

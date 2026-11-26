@@ -57,6 +57,7 @@ type Controller struct {
 	unconfirmed  map[string]unconfirmedVM
 	backoffUntil time.Time
 	deleting     map[string]time.Time // VMs we asked to delete; the provider lists them a while longer
+	listedPrev   map[string]listedVM  // pool VMs the previous tick listed
 
 	wake    chan struct{}
 	wakeGap time.Duration
@@ -81,6 +82,7 @@ type Status struct {
 	BackoffUntil   *time.Time     `json:"create_backoff_until,omitempty"`
 	VMsCreated     int            `json:"vms_created_total"`
 	VMsDeleted     int            `json:"vms_deleted_total"`
+	VMsVanished    int            `json:"vms_vanished_total"`
 	CreateFailures int            `json:"create_failures_total"`
 	ConfigsIssued  int            `json:"configs_issued_total"`
 }
@@ -108,7 +110,7 @@ func New(cfg *config.Config, forge Forge, prov Provider, verify IdentityVerifier
 		log: log.With("component", "burst"), now: time.Now,
 		active: map[string]time.Time{}, saturated: map[string]time.Time{}, ownerTypes: map[string]github.OwnerType{},
 		seenBusy: map[string]bool{}, lastOutcome: map[string]string{}, unconfirmed: map[string]unconfirmedVM{}, deleting: map[string]time.Time{},
-		wake: make(chan struct{}, 1), wakeGap: defaultWakeGap,
+		listedPrev: map[string]listedVM{}, wake: make(chan struct{}, 1), wakeGap: defaultWakeGap,
 		status: Status{Provider: bc.Provider, DryRun: bc.DryRun, BudgetCapH: bc.MaxVMHoursPerDay},
 	}, nil
 }
@@ -342,6 +344,7 @@ func (c *Controller) Tick(ctx context.Context) error {
 	for _, in := range all {
 		listed[in.Name] = true
 	}
+	c.noteVanished(now, listed)
 	for name, at := range c.deleting {
 		if !listed[name] || now.Sub(at) > deleteGrace {
 			delete(c.deleting, name)
@@ -355,6 +358,7 @@ func (c *Controller) Tick(ctx context.Context) error {
 		if _, gone := c.deleting[in.Name]; gone {
 			continue // already being deleted: neither active nor deleted again
 		}
+		c.listedPrev[in.Name] = listedVM{pool: p.Name, created: in.Created}
 		t, known := c.reg.TargetOf(p.Name, in.Name)
 		byPool[p.Name] = append(byPool[p.Name], vm{Instance: in, target: t, known: known})
 		total++
@@ -534,6 +538,38 @@ func (c *Controller) deleteVM(ctx context.Context, pool, name, reason string) bo
 	c.bump(func(s *Status) { s.VMsDeleted++ })
 	c.log.Info("delete", "pool", pool, "vm", name, "reason", reason)
 	return true
+}
+
+// listedVM is what noteVanished needs of a VM the previous tick listed.
+type listedVM struct {
+	pool    string
+	created time.Time
+}
+
+// noteVanished logs and forgets each pool VM the previous tick listed that the provider no
+// longer lists although the scaler never asked to delete it. On GCE spot VMs are created with
+// instanceTerminationAction=DELETE, so a preemption looks exactly like this: the VM is simply
+// gone, with no not_running state for a tick to see. A VM that stops itself (the bootstrap
+// powers off when its runner exits) stays listed as TERMINATED and is reaped as not_running
+// instead, so the two causes stay apart. busy says whether its runner was last seen running a
+// job, i.e. whether a job was lost with it. Without this the VM left no log line and its
+// registry pending entry stayed forever.
+func (c *Controller) noteVanished(now time.Time, listed map[string]bool) {
+	for name, prev := range c.listedPrev {
+		if listed[name] {
+			continue
+		}
+		delete(c.listedPrev, name)
+		if _, ours := c.deleting[name]; ours {
+			continue // our own delete finished
+		}
+		c.log.Warn("vm_vanished", "pool", prev.pool, "vm", name,
+			"age", now.Sub(prev.created).Round(time.Second).String(), "busy", c.seenBusy[name])
+		c.bump(func(s *Status) { s.VMsVanished++ })
+		if err := c.reg.Forget(prev.pool, name); err != nil {
+			c.log.Error("registry_failed", "pool", prev.pool, "vm", name, "err", err)
+		}
+	}
 }
 
 // unconfirmedIn returns, per target, the pool's unconfirmed creates that the
